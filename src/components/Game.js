@@ -5,7 +5,7 @@ import { useState, useEffect, useRef } from "react";
 // PLAYER_DB is populated at runtime via fetch
 let PLAYER_DB = [];
 
-const TEAMS = [...new Set(PLAYER_DB.map(p => p.team))].sort();
+// TEAMS computed dynamically after players load — see component
 
 // ── TEAM COLORS ───────────────────────────────────────────────────────────────
 const TEAM_COLORS = {
@@ -454,10 +454,12 @@ export default function Game(){
   function doSpin(opts={}){
     const{exclude=null,hometown=false}=opts;
     setSpinning(true);setSpinLanded(false);setPick1(null);setPick2(null);setSelSlot(null);
-    const avail=shuffle(TEAMS.filter(t=>!usedTeams.has(t)&&t!==exclude&&PLAYER_DB.some(p=>p.team===t&&!draftedNames.has(playerBase(p.name)))));
+    const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
+    const avail=shuffle(allTeams.filter(t=>!usedTeams.has(t)&&t!==exclude&&PLAYER_DB.some(p=>p.team===t&&!draftedNames.has(playerBase(p.name)))));
     const pool=hometown&&currentTeam?[currentTeam]:avail;
     if(!pool.length){setSpinning(false);return;}
-    const display=hometown?TEAMS:pool;
+    const allTeams2=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
+    const display=hometown?allTeams2:pool;
     let ticks=0;
     const iv=setInterval(()=>{
       ticks++;
