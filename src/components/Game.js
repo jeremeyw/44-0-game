@@ -143,10 +143,23 @@ function posColor(pos){if(!pos)return"#6b7280";if(pos.startsWith("G"))return POS
 function shuffle(arr){const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
 
 // ── BOARD GENERATION ──────────────────────────────────────────────────────────
+// Franchise tiers for weighting
+const TEAM_TIERS={
+  "Las Vegas Aces":2,"Indiana Fever":2,"New York Liberty":2,
+  "Seattle Storm":2,"Minnesota Lynx":2,"Phoenix Mercury":2,
+  "Los Angeles Sparks":1,"Connecticut Sun":1,"Atlanta Dream":1,
+  "Chicago Sky":1,"Washington Mystics":1,"Dallas Wings":1,
+  "Houston Comets":1,"Sacramento Monarchs":1,"Charlotte Sting":1,
+  "Cleveland Rockers":1,
+  "Golden State Valkyries":0,"Toronto Tempo":0,"Miami Sol":0,"Portland Fire":0,
+};
+
 function generateBoard(team,draftedNames=new Set(),hometown=false,size=10,minElite=3){
   const pool=PLAYER_DB.filter(p=>p.team===team);
-  const elite=pool.filter(p=>p.off>=80||p.def>=80);
-  const regular=pool.filter(p=>p.off<80&&p.def<80);
+  // Don't sort by rating — shuffle for variety, then pick elite separately
+  const shuffledPool=shuffle([...pool]);
+  const elite=shuffledPool.filter(p=>p.off>=80||p.def>=80);
+  const regular=shuffledPool.filter(p=>p.off<80&&p.def<80);
   function pickUnique(candidates,n,boardSeen=new Set()){
     const shuffled=shuffle(candidates);
     const result=[];
@@ -174,7 +187,7 @@ function generateBoard(team,draftedNames=new Set(),hometown=false,size=10,minEli
 function simulateSeason(rosterSlots){
   const filled=rosterSlots.filter(s=>s.player);
   if(filled.length<5)return null;
-  const BASE=72;
+  const BASE=68; // Lowered from 72 — makes average defenders neutral not negative
   const ovrs=filled.map(s=>{
     const pen=getPosPenalty(s.player.pos,s.posGroup);
     const g=s.player.g||30;
@@ -263,7 +276,11 @@ function simulateSeason(rosterSlots){
   else if(peakQ>=75)                  ceiling=17;
   else                                ceiling=12;
 
-  const wins=Math.max(0,Math.min(ceiling,Math.round(raw)));
+  // Star carry floor — superstars can't drag a team below a floor
+  const allTimers=ovrs.filter(o=>o.offRaw>=95||o.defRaw>=95).length;
+  const superstars=ovrs.filter(o=>o.offRaw>=90||o.defRaw>=90).length;
+  const starFloor=allTimers>=2?28:allTimers>=1&&superstars>=1?26:allTimers>=1?23:superstars>=2?21:0;
+  const wins=Math.max(starFloor,Math.min(ceiling,Math.round(raw)));
   return{
     wins,losses:44-wins,
     teamOff:Math.round(avgOff),teamDef:Math.round(avgDef),
@@ -474,17 +491,33 @@ export default function Game(){
     const{exclude=null,hometown=false}=opts;
     setSpinning(true);setSpinLanded(false);setPick1(null);setPick2(null);setSelSlot(null);
     const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
-    // Load recently seen teams from localStorage (last 2 games)
+    // Load recently seen teams from localStorage
     let recentTeams=[];
     try{recentTeams=JSON.parse(localStorage.getItem("44o_recent")||"[]");}catch{}
-    const avail=shuffle(allTeams.filter(t=>!usedTeams.has(t)&&t!==exclude&&PLAYER_DB.some(p=>p.team===t&&!draftedNames.has(playerBase(p.name)))));
-    // Deprioritize recently seen teams — put them at the end
-    const fresh=avail.filter(t=>!recentTeams.includes(t));
-    const stale=avail.filter(t=>recentTeams.includes(t));
-    const weightedAvail=[...fresh,...stale];
-    // Pick from first 75% of weighted list to favor fresh teams
-    const pickPool=weightedAvail.slice(0,Math.max(1,Math.ceil(weightedAvail.length*0.75)));
-    const pool=hometown&&currentTeam?[currentTeam]:(pickPool.length?pickPool:weightedAvail);
+    // Hard exclude last 8 teams for rounds 0-2, soften after
+    const hardExcludeCount=round<3?8:4;
+    const hardExcluded=new Set(recentTeams.slice(0,hardExcludeCount));
+    // Thin franchises (tier 0) max once per session
+    const thinTeams=new Set(Object.entries(TEAM_TIERS).filter(([,v])=>v===0).map(([k])=>k));
+    const thinUsed=[...usedTeams].filter(t=>thinTeams.has(t)).length;
+    const avail=allTeams.filter(t=>{
+      if(usedTeams.has(t)||t===exclude) return false;
+      if(!PLAYER_DB.some(p=>p.team===t&&!draftedNames.has(playerBase(p.name)))) return false;
+      if(hardExcluded.has(t)&&allTeams.filter(t2=>!usedTeams.has(t2)&&!hardExcluded.has(t2)).length>2) return false;
+      if(thinTeams.has(t)&&thinUsed>=1) return false;
+      return true;
+    });
+    // Weight by tier: Tier 2 = 3 entries, Tier 1 = 2 entries, Tier 0 = 1 entry
+    const weighted=[];
+    avail.forEach(t=>{
+      const tier=TEAM_TIERS[t]!==undefined?TEAM_TIERS[t]:1;
+      const w=tier===2?3:tier===1?2:1;
+      for(let i=0;i<w;i++) weighted.push(t);
+    });
+    const shuffledW=shuffle(weighted);
+    const deduped=[];const seenT=new Set();
+    shuffledW.forEach(t=>{if(!seenT.has(t)){seenT.add(t);deduped.push(t);}});
+    const pool=hometown&&currentTeam?[currentTeam]:(deduped.length?deduped:avail);
     if(!pool.length){setSpinning(false);return;}
     const allTeams2=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
     const display=hometown?allTeams2:pool;
@@ -888,51 +921,86 @@ export default function Game(){
           )}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <button onClick={async()=>{
-              const canvas=document.createElement("canvas");
-              const dpr=Math.min(window.devicePixelRatio||1,2);
-              const W=390,H=730;
-              canvas.width=W*dpr;canvas.height=H*dpr;
-              const ctx=canvas.getContext("2d");ctx.scale(dpr,dpr);
-              ctx.fillStyle="#07090f";ctx.fillRect(0,0,W,H);
-              ctx.strokeStyle="rgba(255,255,255,0.03)";ctx.lineWidth=1;
-              for(let x=0;x<W;x+=24){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-              for(let y=0;y<H;y+=24){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-              ctx.font="600 11px -apple-system,Arial";ctx.fillStyle="#6b7280";ctx.textAlign="center";ctx.letterSpacing="0.2em";ctx.fillText("FINAL RECORD",W/2,48);
-              ctx.font="900 88px Georgia,serif";ctx.fillStyle=tier.color;ctx.textAlign="center";
-              ctx.fillText(`${result.wins}-${result.losses}`,W/2,148);
-              ctx.font="700 11px -apple-system,Arial";ctx.fillStyle=tier.color;ctx.letterSpacing="0.15em";ctx.fillText(tier.label,W/2,172);
-              ctx.font="italic 11px Arial";ctx.fillStyle="#6b7280";ctx.fillText(tierMsg,W/2,192);
-              [[`OFF ${result.teamOff}`,"#f59e42",18,208],[`DEF ${result.teamDef}`,"#60a5fa",W/2+8,208]].forEach(([t,c,x,y])=>{
-                ctx.fillStyle="rgba(255,255,255,0.05)";ctx.beginPath();ctx.roundRect(x,y,W/2-26,62,8);ctx.fill();
-                ctx.font="900 26px 'Arial Black',Arial";ctx.fillStyle=c;ctx.textAlign="center";ctx.fillText(t,x+(W/2-26)/2,y+40);
-              });
-              ctx.font="700 9px Arial";ctx.fillStyle="#6b7280";ctx.textAlign="left";ctx.fillText("YOUR ROSTER",20,288);
-              let ry=300;
-              slots.filter(s=>s.player).forEach(s=>{
-                const p=s.player;const rH=43;
-                ctx.fillStyle="rgba(255,255,255,0.04)";ctx.beginPath();ctx.roundRect(20,ry,W-40,rH,7);ctx.fill();
-                const posC=p.pos?.startsWith("G")?"#f59e42":p.pos?.startsWith("C")?"#60a5fa":"#4ade80";
-                ctx.fillStyle=posC+"33";ctx.beginPath();ctx.arc(45,ry+rH/2,13,0,Math.PI*2);ctx.fill();
-                ctx.strokeStyle=posC+"88";ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(45,ry+rH/2,13,0,Math.PI*2);ctx.stroke();
-                ctx.font="700 10px Arial";ctx.fillStyle=posC;ctx.textAlign="center";
-                ctx.fillText(p.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase(),45,ry+rH/2+4);
-                ctx.font="700 13px Arial";ctx.fillStyle="#f9fafb";ctx.textAlign="left";ctx.fillText(p.name,65,ry+rH/2-3);
-                ctx.font="500 9px Arial";ctx.fillStyle="#6b7280";ctx.fillText(`${s.key} · ${p.season}`,65,ry+rH/2+11);
-                ctx.font="800 12px 'Arial Black',Arial";ctx.fillStyle="#f9fafb";ctx.textAlign="right";
-                ctx.fillText((p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1),W-24,ry+rH/2+5);
-                ry+=rH+4;
-              });
-              ry+=14;
-              ctx.font="600 12px Arial";ctx.fillStyle="#9ca3af";ctx.textAlign="center";
-              ctx.fillText(`I went ${result.wins}-${result.losses}, think you can do better?`,W/2,ry+14);
-              ctx.font="900 20px 'Arial Black',Arial";ctx.fillStyle="#f59e42";ctx.fillText("44-0.com",W/2,ry+40);
-              canvas.toBlob(async(blob)=>{
-                const file=new File([blob],"44-0-result.png",{type:"image/png"});
-                if(navigator.canShare&&navigator.canShare({files:[file]})){
-                  try{await navigator.share({files:[file],title:"44-0 WNBA Draft Game"});}
-                  catch{window.open(URL.createObjectURL(blob),"_blank");}
-                }else{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="44-0-result.png";a.click();}
-              },"image/png");
+              // Load html2canvas
+              if(!window.html2canvas){
+                await new Promise((res,rej)=>{
+                  const s=document.createElement("script");
+                  s.src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+                  s.onload=res;s.onerror=rej;document.head.appendChild(s);
+                });
+              }
+              // Build share card DOM matching game styles exactly
+              const card=document.createElement("div");
+              card.style.cssText="position:fixed;left:-9999px;top:0;width:390px;background:#07090f;color:#f9fafb;padding:40px 20px 32px;box-sizing:border-box;font-family:Barlow Condensed,sans-serif;";
+              card.innerHTML=`
+                <div style="text-align:center;margin-bottom:24px">
+                  <div style="font-size:11px;letter-spacing:0.2em;color:#6b7280;margin-bottom:10px;font-family:Barlow,sans-serif">FINAL RECORD</div>
+                  <div style="font-size:88px;font-weight:900;line-height:0.9;letter-spacing:-0.03em;color:${tier.color}">${result.wins}<span style="color:rgba(255,255,255,0.15)">-</span>${result.losses}</div>
+                  <div style="font-size:13px;letter-spacing:0.18em;color:${tier.color};margin-top:10px;font-weight:700;text-transform:uppercase">${tier.label}</div>
+                  <div style="font-size:12px;color:#6b7280;margin-top:6px;font-style:italic;font-family:Barlow,sans-serif">${tierMsg}</div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px">
+                  <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 10px;text-align:center">
+                    <div style="font-size:9px;color:#6b7280;letter-spacing:0.1em;margin-bottom:4px;font-family:Barlow,sans-serif">TEAM OFF RTG</div>
+                    <div style="font-size:28px;font-weight:900;color:#f59e42">${result.teamOff}</div>
+                  </div>
+                  <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 10px;text-align:center">
+                    <div style="font-size:9px;color:#6b7280;letter-spacing:0.1em;margin-bottom:4px;font-family:Barlow,sans-serif">TEAM DEF RTG</div>
+                    <div style="font-size:28px;font-weight:900;color:#60a5fa">${result.teamDef}</div>
+                  </div>
+                </div>
+                <div style="font-size:10px;color:#6b7280;letter-spacing:0.1em;margin-bottom:10px;font-family:Barlow,sans-serif">YOUR ROSTER</div>
+                ${slots.filter(s=>s.player).map(s=>{
+                  const p=s.player;
+                  const c=p.pos&&p.pos.startsWith("G")?"#f59e42":p.pos&&p.pos.startsWith("C")?"#60a5fa":"#4ade80";
+                  const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
+                  const ini=p.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+                  return \`<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:11px 13px;margin-bottom:7px">
+                    <div style="width:36px;height:36px;border-radius:50%;background:\${c}22;border:1.5px solid \${c}66;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:\${c};flex-shrink:0">\${ini}</div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:15px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">\${p.name}</div>
+                      <div style="font-size:10px;color:#6b7280;margin-top:2px;font-family:Barlow,sans-serif"><span style="color:\${c};font-weight:600">\${s.key}</span> · \${p.season}</div>
+                    </div>
+                    <div style="text-align:right;flex-shrink:0">
+                      <div style="font-size:14px;font-weight:800;color:#f9fafb">\${tot}</div>
+                      <div style="font-size:9px;color:#6b7280;font-family:Barlow,sans-serif">TOTAL</div>
+                    </div>
+                  </div>\`;
+                }).join("")}
+                <div style="margin-top:20px;text-align:center;border-top:1px solid rgba(255,255,255,0.06);padding-top:16px">
+                  <div style="font-size:12px;color:#9ca3af;margin-bottom:6px;font-family:Barlow,sans-serif">I went ${result.wins}-${result.losses}, think you can do better?</div>
+                  <div style="font-size:22px;font-weight:900;color:#f59e42;letter-spacing:-0.01em">44-0.com</div>
+                </div>`;
+              document.body.appendChild(card);
+              try{
+                // Wait for fonts
+                await document.fonts.ready;
+                const canvas=await window.html2canvas(card,{
+                  backgroundColor:"#07090f",scale:2,
+                  width:390,windowWidth:430,
+                  onclone:(doc)=>{
+                    const link=doc.createElement("link");
+                    link.href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Barlow:wght@400;500;600&display=swap";
+                    link.rel="stylesheet";
+                    doc.head.appendChild(link);
+                  }
+                });
+                document.body.removeChild(card);
+                canvas.toBlob(async(blob)=>{
+                  const file=new File([blob],"44-0-result.png",{type:"image/png"});
+                  if(navigator.canShare&&navigator.canShare({files:[file]})){
+                    try{await navigator.share({files:[file],title:"44-0 WNBA Draft Game"});}
+                    catch{window.open(URL.createObjectURL(blob),"_blank");}
+                  }else{
+                    const a=document.createElement("a");
+                    a.href=URL.createObjectURL(blob);
+                    a.download="44-0-result.png";a.click();
+                  }
+                },"image/png");
+              }catch(e){
+                if(document.body.contains(card)) document.body.removeChild(card);
+                console.error("Share failed:",e);
+              }
             }} style={{width:"100%",background:"rgba(255,255,255,0.06)",color:"#f9fafb",
               border:"1px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px",fontSize:15,
               fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
