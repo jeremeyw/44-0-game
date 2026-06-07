@@ -177,7 +177,13 @@ function simulateSeason(rosterSlots){
   const BASE=72;
   const ovrs=filled.map(s=>{
     const pen=getPosPenalty(s.player.pos,s.posGroup);
-    return{off:Math.max(0,(s.player.off-BASE))*pen,def:Math.max(0,(s.player.def-BASE))*pen,
+    const g=s.player.g||30;
+    const season=s.player.season||2000;
+    const is2026=season===2026;
+    // Dramatically softened durability — only tiny penalty for very short non-2026 seasons
+    const durPen=is2026?1.0:g<10?0.97:g<15?0.99:1.0;
+    return{off:Math.max(0,(s.player.off-BASE))*pen*durPen,
+           def:Math.max(0,(s.player.def-BASE))*pen*durPen,
            offRaw:s.player.off,defRaw:s.player.def};
   });
   const offSlots=[1.00,0.65,0.42,0.25,0.12];
@@ -190,7 +196,14 @@ function simulateSeason(rosterSlots){
   const avgDef=ovrs.reduce((s,o)=>s+o.defRaw,0)/5;
   const minOff=Math.min(...ovrs.map(o=>o.offRaw));
   const minDef=Math.min(...ovrs.map(o=>o.defRaw));
-  const weakLink=Math.max(0,(72-Math.min(minOff,minDef))/8);
+  // Weak link — capped and maskable by elite defenders
+  const rawWeakLink=Math.max(0,(72-Math.min(minOff,minDef))/8);
+  // Defensive masking: elite defenders cover for weak link
+  const defRatings=ovrs.map(o=>o.defRaw).sort((a,b)=>b-a);
+  const eliteDefenders=defRatings.filter(d=>d>=88).length;
+  const goodDefenders=defRatings.filter(d=>d>=82).length;
+  const maskFactor=eliteDefenders>=3?0.75:eliteDefenders>=2?0.55:goodDefenders>=3?0.35:goodDefenders>=2?0.20:0;
+  const weakLink=rawWeakLink*(1-maskFactor);
   const peakQ=Math.max(...ovrs.map(o=>Math.max(o.offRaw,o.defRaw)));
   const depthScore=(avgOff+avgDef)/2;
 
@@ -223,26 +236,32 @@ function simulateSeason(rosterSlots){
   else if(score<78) raw=38+((score-62)/16)*4;
   else              raw=42+Math.min(2,(score-78)/10);
 
-  // Continuous ceiling — peak + depth BOTH required, no exceptions
-  // depthScore = avg of all 5 OFF+DEF ratings — weak players drag it way down
+  // Continuous ceiling — peak quality + depth both matter
+  // Elite defense can compensate for one weak link (masking applied above)
+  // Combined quality score for smoother ceiling
+  const combinedQ=(peakQ*0.45+depthScore*0.55);
   let ceiling;
-  if(peakQ>=97&&depthScore>=90)      ceiling=44;
-  else if(peakQ>=95&&depthScore>=88) ceiling=43;
-  else if(peakQ>=93&&depthScore>=87) ceiling=41;
-  else if(peakQ>=90&&depthScore>=88) ceiling=41; // great depth
-  else if(peakQ>=93&&depthScore>=84) ceiling=39;
-  else if(peakQ>=90&&depthScore>=86) ceiling=39;
-  else if(peakQ>=88&&depthScore>=85) ceiling=37;
-  else if(peakQ>=86&&depthScore>=86) ceiling=37; // great depth compensates
-  else if(peakQ>=90&&depthScore>=82) ceiling=34;
-  else if(peakQ>=87&&depthScore>=84) ceiling=34;
-  else if(peakQ>=85&&depthScore>=83) ceiling=30;
-  else if(peakQ>=83&&depthScore>=84) ceiling=30;
-  else if(peakQ>=82&&depthScore>=81) ceiling=26;
-  else if(peakQ>=80&&depthScore>=80) ceiling=23;
-  else if(peakQ>=80)                 ceiling=19;
-  else if(peakQ>=75)                 ceiling=15;
-  else                               ceiling=10;
+  if(peakQ>=97&&depthScore>=90)       ceiling=44;
+  else if(peakQ>=95&&depthScore>=88)  ceiling=43;
+  else if(combinedQ>=92&&depthScore>=88) ceiling=43;
+  else if(peakQ>=93&&depthScore>=86)  ceiling=41;
+  else if(combinedQ>=91&&depthScore>=87) ceiling=41;
+  else if(peakQ>=90&&depthScore>=88)  ceiling=41;
+  else if(peakQ>=93&&depthScore>=83)  ceiling=39;
+  else if(peakQ>=90&&depthScore>=85)  ceiling=39;
+  else if(combinedQ>=89&&depthScore>=86) ceiling=39;
+  else if(peakQ>=88&&depthScore>=84)  ceiling=37;
+  else if(combinedQ>=87&&depthScore>=85) ceiling=37;
+  else if(peakQ>=90&&depthScore>=81)  ceiling=34;
+  else if(peakQ>=86&&depthScore>=83)  ceiling=34;
+  else if(combinedQ>=85&&depthScore>=83) ceiling=34;
+  else if(peakQ>=84&&depthScore>=82)  ceiling=30;
+  else if(combinedQ>=83&&depthScore>=82) ceiling=30;
+  else if(peakQ>=82&&depthScore>=80)  ceiling=26;
+  else if(combinedQ>=80&&depthScore>=80) ceiling=26;
+  else if(peakQ>=80)                  ceiling=22;
+  else if(peakQ>=75)                  ceiling=17;
+  else                                ceiling=12;
 
   const wins=Math.max(0,Math.min(ceiling,Math.round(raw)));
   return{
@@ -455,8 +474,17 @@ export default function Game(){
     const{exclude=null,hometown=false}=opts;
     setSpinning(true);setSpinLanded(false);setPick1(null);setPick2(null);setSelSlot(null);
     const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
+    // Load recently seen teams from localStorage (last 2 games)
+    let recentTeams=[];
+    try{recentTeams=JSON.parse(localStorage.getItem("44o_recent")||"[]");}catch{}
     const avail=shuffle(allTeams.filter(t=>!usedTeams.has(t)&&t!==exclude&&PLAYER_DB.some(p=>p.team===t&&!draftedNames.has(playerBase(p.name)))));
-    const pool=hometown&&currentTeam?[currentTeam]:avail;
+    // Deprioritize recently seen teams — put them at the end
+    const fresh=avail.filter(t=>!recentTeams.includes(t));
+    const stale=avail.filter(t=>recentTeams.includes(t));
+    const weightedAvail=[...fresh,...stale];
+    // Pick from first 75% of weighted list to favor fresh teams
+    const pickPool=weightedAvail.slice(0,Math.max(1,Math.ceil(weightedAvail.length*0.75)));
+    const pool=hometown&&currentTeam?[currentTeam]:(pickPool.length?pickPool:weightedAvail);
     if(!pool.length){setSpinning(false);return;}
     const allTeams2=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
     const display=hometown?allTeams2:pool;
@@ -535,6 +563,14 @@ export default function Game(){
 
   function reset(force=false){
     if(!force&&phase!=="result"&&filledCount>0){setShowConfirmReset(true);return;}
+    // Save teams from this game to recent history (keep last 10)
+    if(usedTeams.size>0){
+      try{
+        const prev=JSON.parse(localStorage.getItem("44o_recent")||"[]");
+        const updated=[...usedTeams,...prev].slice(0,10);
+        localStorage.setItem("44o_recent",JSON.stringify([...new Set(updated)]));
+      }catch{}
+    }
     setMode(null);setPhase("spin");setRound(0);setCurrentTeam(null);
     setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
     setDraftedNames(new Set());setUsedTeams(new Set());
