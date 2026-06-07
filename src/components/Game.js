@@ -921,7 +921,6 @@ export default function Game(){
           )}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <button onClick={async()=>{
-              // Load html2canvas
               if(!window.html2canvas){
                 await new Promise((res,rej)=>{
                   const s=document.createElement("script");
@@ -929,76 +928,117 @@ export default function Game(){
                   s.onload=res;s.onerror=rej;document.head.appendChild(s);
                 });
               }
-              // Build share card DOM matching game styles exactly
+              // Build share card using DOM API (no template literal conflicts)
               const card=document.createElement("div");
-              card.style.cssText="position:fixed;left:-9999px;top:0;width:390px;background:#07090f;color:#f9fafb;padding:40px 20px 32px;box-sizing:border-box;font-family:Barlow Condensed,sans-serif;";
-              card.innerHTML=`
-                <div style="text-align:center;margin-bottom:24px">
-                  <div style="font-size:11px;letter-spacing:0.2em;color:#6b7280;margin-bottom:10px;font-family:Barlow,sans-serif">FINAL RECORD</div>
-                  <div style="font-size:88px;font-weight:900;line-height:0.9;letter-spacing:-0.03em;color:${tier.color}">${result.wins}<span style="color:rgba(255,255,255,0.15)">-</span>${result.losses}</div>
-                  <div style="font-size:13px;letter-spacing:0.18em;color:${tier.color};margin-top:10px;font-weight:700;text-transform:uppercase">${tier.label}</div>
-                  <div style="font-size:12px;color:#6b7280;margin-top:6px;font-style:italic;font-family:Barlow,sans-serif">${tierMsg}</div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px">
-                  <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 10px;text-align:center">
-                    <div style="font-size:9px;color:#6b7280;letter-spacing:0.1em;margin-bottom:4px;font-family:Barlow,sans-serif">TEAM OFF RTG</div>
-                    <div style="font-size:28px;font-weight:900;color:#f59e42">${result.teamOff}</div>
-                  </div>
-                  <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 10px;text-align:center">
-                    <div style="font-size:9px;color:#6b7280;letter-spacing:0.1em;margin-bottom:4px;font-family:Barlow,sans-serif">TEAM DEF RTG</div>
-                    <div style="font-size:28px;font-weight:900;color:#60a5fa">${result.teamDef}</div>
-                  </div>
-                </div>
-                <div style="font-size:10px;color:#6b7280;letter-spacing:0.1em;margin-bottom:10px;font-family:Barlow,sans-serif">YOUR ROSTER</div>
-                ${slots.filter(s=>s.player).map(s=>{
-                  const p=s.player;
-                  const c=p.pos&&p.pos.startsWith("G")?"#f59e42":p.pos&&p.pos.startsWith("C")?"#60a5fa":"#4ade80";
-                  const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
-                  const ini=p.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
-                  return \`<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:11px 13px;margin-bottom:7px">
-                    <div style="width:36px;height:36px;border-radius:50%;background:\${c}22;border:1.5px solid \${c}66;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:\${c};flex-shrink:0">\${ini}</div>
-                    <div style="flex:1;min-width:0">
-                      <div style="font-size:15px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">\${p.name}</div>
-                      <div style="font-size:10px;color:#6b7280;margin-top:2px;font-family:Barlow,sans-serif"><span style="color:\${c};font-weight:600">\${s.key}</span> · \${p.season}</div>
-                    </div>
-                    <div style="text-align:right;flex-shrink:0">
-                      <div style="font-size:14px;font-weight:800;color:#f9fafb">\${tot}</div>
-                      <div style="font-size:9px;color:#6b7280;font-family:Barlow,sans-serif">TOTAL</div>
-                    </div>
-                  </div>\`;
-                }).join("")}
-                <div style="margin-top:20px;text-align:center;border-top:1px solid rgba(255,255,255,0.06);padding-top:16px">
-                  <div style="font-size:12px;color:#9ca3af;margin-bottom:6px;font-family:Barlow,sans-serif">I went ${result.wins}-${result.losses}, think you can do better?</div>
-                  <div style="font-size:22px;font-weight:900;color:#f59e42;letter-spacing:-0.01em">44-0.com</div>
-                </div>`;
+              const cs=card.style;
+              cs.position="fixed";cs.left="-9999px";cs.top="0";cs.width="390px";
+              cs.background="#07090f";cs.color="#f9fafb";cs.padding="40px 20px 32px";
+              cs.boxSizing="border-box";cs.fontFamily="'Barlow Condensed',sans-serif";
+
+              // Header
+              const hdr=document.createElement("div");
+              hdr.style.cssText="text-align:center;margin-bottom:24px";
+              const lbl=document.createElement("div");
+              lbl.style.cssText="font-size:11px;letter-spacing:0.2em;color:#6b7280;margin-bottom:10px;font-family:Barlow,sans-serif";
+              lbl.textContent="FINAL RECORD";
+              const rec=document.createElement("div");
+              rec.style.cssText="font-size:88px;font-weight:900;line-height:0.9;letter-spacing:-0.03em;color:"+tier.color;
+              rec.textContent=result.wins+"-"+result.losses;
+              const tierLbl=document.createElement("div");
+              tierLbl.style.cssText="font-size:13px;letter-spacing:0.18em;font-weight:700;margin-top:10px;text-transform:uppercase;color:"+tier.color;
+              tierLbl.textContent=tier.label;
+              const msg=document.createElement("div");
+              msg.style.cssText="font-size:12px;color:#6b7280;margin-top:6px;font-style:italic;font-family:Barlow,sans-serif";
+              msg.textContent=tierMsg;
+              hdr.appendChild(lbl);hdr.appendChild(rec);hdr.appendChild(tierLbl);hdr.appendChild(msg);
+
+              // Ratings
+              const rtgRow=document.createElement("div");
+              rtgRow.style.cssText="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px";
+              [["TEAM OFF RTG",result.teamOff,"#f59e42"],["TEAM DEF RTG",result.teamDef,"#60a5fa"]].forEach(function(item){
+                const box=document.createElement("div");
+                box.style.cssText="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 10px;text-align:center";
+                const bl=document.createElement("div");
+                bl.style.cssText="font-size:9px;color:#6b7280;letter-spacing:0.1em;margin-bottom:4px;font-family:Barlow,sans-serif";
+                bl.textContent=item[0];
+                const bv=document.createElement("div");
+                bv.style.cssText="font-size:28px;font-weight:900;color:"+item[2];
+                bv.textContent=item[1];
+                box.appendChild(bl);box.appendChild(bv);rtgRow.appendChild(box);
+              });
+
+              // Roster label
+              const rLabel=document.createElement("div");
+              rLabel.style.cssText="font-size:10px;color:#6b7280;letter-spacing:0.1em;margin-bottom:10px;font-family:Barlow,sans-serif";
+              rLabel.textContent="YOUR ROSTER";
+
+              // Roster rows
+              const rosterDiv=document.createElement("div");
+              slots.filter(function(s){return s.player;}).forEach(function(s){
+                const p=s.player;
+                const c=p.pos&&p.pos.startsWith("G")?"#f59e42":p.pos&&p.pos.startsWith("C")?"#60a5fa":"#4ade80";
+                const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
+                const ini=p.name.split(" ").map(function(w){return w[0];}).join("").slice(0,2).toUpperCase();
+                const row=document.createElement("div");
+                row.style.cssText="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:11px 13px;margin-bottom:7px";
+                const av=document.createElement("div");
+                av.style.cssText="width:36px;height:36px;border-radius:50%;background:"+c+"22;border:1.5px solid "+c+"66;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:"+c+";flex-shrink:0";
+                av.textContent=ini;
+                const info=document.createElement("div");
+                info.style.cssText="flex:1;min-width:0";
+                const nm=document.createElement("div");
+                nm.style.cssText="font-size:15px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+                nm.textContent=p.name;
+                const sub=document.createElement("div");
+                sub.style.cssText="font-size:10px;color:#6b7280;margin-top:2px;font-family:Barlow,sans-serif";
+                sub.textContent=s.key+" · "+p.season;
+                info.appendChild(nm);info.appendChild(sub);
+                const stat=document.createElement("div");
+                stat.style.cssText="text-align:right;flex-shrink:0";
+                const sv=document.createElement("div");
+                sv.style.cssText="font-size:14px;font-weight:800;color:#f9fafb";
+                sv.textContent=tot;
+                const sl=document.createElement("div");
+                sl.style.cssText="font-size:9px;color:#6b7280;font-family:Barlow,sans-serif";
+                sl.textContent="TOTAL";
+                stat.appendChild(sv);stat.appendChild(sl);
+                row.appendChild(av);row.appendChild(info);row.appendChild(stat);
+                rosterDiv.appendChild(row);
+              });
+
+              // Footer CTA
+              const footer=document.createElement("div");
+              footer.style.cssText="margin-top:20px;text-align:center;border-top:1px solid rgba(255,255,255,0.06);padding-top:16px";
+              const cta=document.createElement("div");
+              cta.style.cssText="font-size:12px;color:#9ca3af;margin-bottom:6px;font-family:Barlow,sans-serif";
+              cta.textContent="I went "+result.wins+"-"+result.losses+", think you can do better?";
+              const domain=document.createElement("div");
+              domain.style.cssText="font-size:22px;font-weight:900;color:#f59e42;letter-spacing:-0.01em";
+              domain.textContent="44-0.com";
+              footer.appendChild(cta);footer.appendChild(domain);
+
+              card.appendChild(hdr);card.appendChild(rtgRow);card.appendChild(rLabel);
+              card.appendChild(rosterDiv);card.appendChild(footer);
               document.body.appendChild(card);
+
               try{
-                // Wait for fonts
                 await document.fonts.ready;
                 const canvas=await window.html2canvas(card,{
-                  backgroundColor:"#07090f",scale:2,
-                  width:390,windowWidth:430,
-                  onclone:(doc)=>{
-                    const link=doc.createElement("link");
-                    link.href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Barlow:wght@400;500;600&display=swap";
-                    link.rel="stylesheet";
-                    doc.head.appendChild(link);
-                  }
+                  backgroundColor:"#07090f",scale:2,width:390,windowWidth:430
                 });
                 document.body.removeChild(card);
-                canvas.toBlob(async(blob)=>{
+                canvas.toBlob(async function(blob){
                   const file=new File([blob],"44-0-result.png",{type:"image/png"});
                   if(navigator.canShare&&navigator.canShare({files:[file]})){
                     try{await navigator.share({files:[file],title:"44-0 WNBA Draft Game"});}
-                    catch{window.open(URL.createObjectURL(blob),"_blank");}
+                    catch(e2){window.open(URL.createObjectURL(blob),"_blank");}
                   }else{
                     const a=document.createElement("a");
-                    a.href=URL.createObjectURL(blob);
-                    a.download="44-0-result.png";a.click();
+                    a.href=URL.createObjectURL(blob);a.download="44-0-result.png";a.click();
                   }
                 },"image/png");
               }catch(e){
-                if(document.body.contains(card)) document.body.removeChild(card);
+                if(document.body.contains(card))document.body.removeChild(card);
                 console.error("Share failed:",e);
               }
             }} style={{width:"100%",background:"rgba(255,255,255,0.06)",color:"#f9fafb",
