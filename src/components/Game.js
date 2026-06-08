@@ -154,12 +154,16 @@ const TEAM_TIERS={
   "Golden State Valkyries":0,"Toronto Tempo":0,"Miami Sol":0,"Portland Fire":0,
 };
 
+// ── LEAGUE CONFIG ──────────────────────────────────────────────────────────────
+const LEAGUES={
+  wnba:{name:"WNBA",emoji:"🏀",record:"44-0",games:44,active:true,color:"#f59e42"},
+  nba:{name:"NBA",emoji:"🏀",record:"82-0",games:82,active:false,color:"#f97316"},
+  nfl:{name:"NFL",emoji:"🏈",record:"17-0",games:17,active:false,color:"#22c55e"},
+  mlb:{name:"MLB",emoji:"⚾",record:"162-0",games:162,active:false,color:"#3b82f6"},
+};
+
 function generateBoard(team,draftedNames=new Set(),hometown=false,size=10,minElite=3){
   const pool=PLAYER_DB.filter(p=>p.team===team);
-  // Don't sort by rating — shuffle for variety, then pick elite separately
-  const shuffledPool=shuffle([...pool]);
-  const elite=shuffledPool.filter(p=>p.off>=80||p.def>=80);
-  const regular=shuffledPool.filter(p=>p.off<80&&p.def<80);
   function pickUnique(candidates,n,boardSeen=new Set()){
     const shuffled=shuffle(candidates);
     const result=[];
@@ -174,13 +178,32 @@ function generateBoard(team,draftedNames=new Set(),hometown=false,size=10,minEli
     return result;
   }
   const boardSeen=new Set();
-  const elitePicks=pickUnique(elite,minElite,boardSeen);
-  let regPicks=pickUnique(regular,size-elitePicks.length,boardSeen);
-  if(regPicks.length<size-elitePicks.length){
-    const extra=elite.filter(p=>!boardSeen.has(playerBase(p.name)));
-    regPicks=[...regPicks,...pickUnique(extra,size-elitePicks.length-regPicks.length,boardSeen)];
-  }
-  return shuffle([...elitePicks,...regPicks]).slice(0,size);
+
+  // Step 1: Guarantee 2-3 modern era players (2022-2026) if available
+  const modern=shuffle(pool.filter(p=>p.season>=2022));
+  const modernElite=modern.filter(p=>p.off>=80||p.def>=80);
+  const modernOther=modern.filter(p=>p.off<80&&p.def<80);
+  const modernPicks=pickUnique(modernElite.length?modernElite:modernOther,Math.min(3,modern.length),boardSeen);
+
+  // Step 2: Fill elite slots (80+ rating) from any era
+  const allElite=shuffle(pool.filter(p=>p.off>=80||p.def>=80));
+  const eliteNeeded=Math.max(0,minElite-modernPicks.filter(p=>p.off>=80||p.def>=80).length);
+  const elitePicks=pickUnique(allElite,eliteNeeded,boardSeen);
+
+  // Step 3: Fill remaining with random mix — slight modern bias
+  const remaining=size-modernPicks.length-elitePicks.length;
+  const remainPool=shuffle(pool.filter(p=>!boardSeen.has(playerBase(p.name))));
+  // Weight modern players 2x in remaining pool
+  const weightedRemain=[];
+  remainPool.forEach(function(p){
+    if(!hometown&&draftedNames.has(playerBase(p.name)))return;
+    if(boardSeen.has(playerBase(p.name)))return;
+    weightedRemain.push(p);
+    if(p.season>=2022)weightedRemain.push(p); // double entry for modern
+  });
+  const regPicks=pickUnique(shuffle(weightedRemain),remaining,boardSeen);
+
+  return shuffle([...modernPicks,...elitePicks,...regPicks]).slice(0,size);
 }
 
 // ── SIMULATION ────────────────────────────────────────────────────────────────
@@ -468,6 +491,8 @@ export default function Game(){
   const [waitlistDone,setWaitlistDone]=useState(false);
   const [leaderboard,setLeaderboard]=useState(MOCK_LB);
   const [showConfirmReset,setShowConfirmReset]=useState(false);
+  const [currentLeague,setCurrentLeague]=useState("wnba");
+  const [showComingSoon,setShowComingSoon]=useState(null);
 
   const [playersLoaded, setPlayersLoaded] = useState(false);
 
@@ -627,16 +652,23 @@ export default function Game(){
   const MenuOverlay=()=>(
     <div style={{position:"fixed",inset:0,zIndex:200,display:"flex"}} onClick={()=>setMenuOpen(false)}>
       <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.6)",backdropFilter:"blur(4px)"}}/>
-      <div onClick={e=>e.stopPropagation()} style={{position:"absolute",top:0,right:0,bottom:0,width:240,
+      <div onClick={e=>e.stopPropagation()} style={{position:"absolute",top:0,right:0,bottom:0,width:260,
         background:"#0d1017",borderLeft:"1px solid rgba(255,255,255,0.08)",
-        display:"flex",flexDirection:"column",padding:"48px 20px 32px"}}>
+        display:"flex",flexDirection:"column",padding:"48px 20px 32px",overflowY:"auto"}}>
         <button onClick={()=>setMenuOpen(false)} style={{position:"absolute",top:16,right:16,
           background:"none",border:"none",color:"#6b7280",fontSize:20,cursor:"pointer",lineHeight:1}}>✕</button>
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:900,marginBottom:28,color:"#f9fafb"}}>
-          44<span style={{color:"#f59e42"}}>-</span>0
+
+        {/* Drafted branding */}
+        <div style={{marginBottom:24}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:900,color:"#f9fafb",letterSpacing:"0.02em"}}>
+            DRAFTED
+          </div>
+          <div style={{fontSize:10,color:"#4b5563",letterSpacing:"0.1em",marginTop:2}}>drafted.games</div>
         </div>
+
+        {/* Username */}
         <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",
-          borderRadius:10,padding:"10px 12px",marginBottom:24}}>
+          borderRadius:10,padding:"10px 12px",marginBottom:20}}>
           <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.1em",marginBottom:3}}>PLAYING AS</div>
           <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:"#f9fafb"}}>{username||"Anonymous"}</div>
           <button onClick={()=>{setMenuOpen(false);setUsernameInput(username);setShowUsernamePrompt(true);}}
@@ -644,14 +676,51 @@ export default function Game(){
             Change username →
           </button>
         </div>
-        {[{label:"🏆  Leaderboard",action:()=>{setMenuOpen(false);setShowLeaderboard(true);}},
-          {label:"📱  Join App Waitlist",action:()=>{setMenuOpen(false);setShowWaitlist(true);}},
-          {label:"🔄  New Game",action:()=>reset(),danger:true}].map(item=>(
-          <button key={item.label} onClick={item.action} style={{background:"none",
-            border:"none",borderBottom:"1px solid rgba(255,255,255,0.06)",padding:"16px 0",
-            textAlign:"left",cursor:"pointer",fontFamily:"'Barlow',sans-serif",fontSize:14,
-            fontWeight:600,color:item.danger?"#f87171":"#e5e7eb"}}>{item.label}</button>
-        ))}
+
+        {/* New Game */}
+        <button onClick={()=>reset()} style={{background:"none",border:"none",
+          borderBottom:"1px solid rgba(255,255,255,0.06)",padding:"14px 0",
+          textAlign:"left",cursor:"pointer",fontFamily:"'Barlow',sans-serif",fontSize:14,
+          fontWeight:600,color:"#f87171"}}>🔄  New Game</button>
+
+        {/* Leagues */}
+        <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.14em",marginTop:20,marginBottom:10,fontWeight:700}}>LEAGUES</div>
+        {Object.entries(LEAGUES).map(function(entry){
+          const key=entry[0];const lg=entry[1];
+          const isActive=key===currentLeague;
+          return(
+            <button key={key} onClick={()=>{
+              if(lg.active){setCurrentLeague(key);setMenuOpen(false);}
+              else{setMenuOpen(false);setShowComingSoon(key);}
+            }} style={{
+              background:isActive?"rgba(255,255,255,0.06)":"none",
+              border:isActive?"1px solid rgba(255,255,255,0.12)":"none",
+              borderBottom:isActive?"none":"1px solid rgba(255,255,255,0.04)",
+              borderRadius:isActive?8:0,
+              padding:"12px 10px",textAlign:"left",cursor:"pointer",
+              fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:isActive?800:600,
+              color:isActive?lg.color:"#9ca3af",letterSpacing:"0.04em",
+              display:"flex",alignItems:"center",justifyContent:"space-between",
+              boxShadow:isActive?"0 0 12px "+lg.color+"22":"none",
+            }}>
+              <span>{lg.emoji}  {lg.name}</span>
+              {isActive&&<span style={{fontSize:9,color:lg.color,fontWeight:800,letterSpacing:"0.1em"}}>{lg.record}</span>}
+              {!lg.active&&<span style={{fontSize:9,color:"#374151",letterSpacing:"0.06em"}}>SOON</span>}
+            </button>
+          );
+        })}
+
+        {/* Leaderboard */}
+        <button onClick={()=>{setMenuOpen(false);setShowLeaderboard(true);}} style={{
+          background:"none",border:"none",borderBottom:"1px solid rgba(255,255,255,0.06)",
+          padding:"14px 0",textAlign:"left",cursor:"pointer",fontFamily:"'Barlow',sans-serif",
+          fontSize:14,fontWeight:600,color:"#e5e7eb",marginTop:16}}>🏆  Leaderboard</button>
+
+        {/* Waitlist */}
+        <button onClick={()=>{setMenuOpen(false);setShowWaitlist(true);}} style={{
+          background:"none",border:"none",borderBottom:"1px solid rgba(255,255,255,0.06)",
+          padding:"14px 0",textAlign:"left",cursor:"pointer",fontFamily:"'Barlow',sans-serif",
+          fontSize:14,fontWeight:600,color:"#e5e7eb"}}>📱  Join App Waitlist</button>
       </div>
     </div>
   );
@@ -666,6 +735,63 @@ export default function Game(){
       <div style={{fontSize:12,color:"#4b5563",letterSpacing:"0.14em"}}>LOADING...</div>
     </div>
   );
+
+  // ── COMING SOON PAGE ────────────────────────────────────────────────────────
+  if(showComingSoon){
+    const csLg=LEAGUES[showComingSoon];
+    return(
+      <div style={{...wrap,justifyContent:"center",minHeight:"100vh"}}>
+        <div style={{width:"100%",textAlign:"center"}}>
+          <div style={{fontSize:56,marginBottom:16}}>{csLg.emoji}</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:42,fontWeight:900,
+            color:csLg.color,letterSpacing:"-0.02em",marginBottom:4}}>{csLg.record}</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:800,
+            color:"#f9fafb",letterSpacing:"0.04em",marginBottom:8}}>{csLg.name} DRAFT GAME</div>
+          <div style={{fontSize:13,color:"#6b7280",marginBottom:32,lineHeight:1.6}}>
+            Build the greatest {csLg.name} team of all time.<br/>Coming soon to drafted.games
+          </div>
+
+          {/* Waitlist inline */}
+          <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.08)",
+            borderRadius:14,padding:"20px",marginBottom:24,textAlign:"center"}}>
+            <div style={{fontSize:12,color:"#9ca3af",marginBottom:14}}>Get notified when {csLg.name} drops</div>
+            {!waitlistDone?(
+              <>
+                <input value={waitlistInput} onChange={function(e){setWaitlistInput(e.target.value);}}
+                  placeholder="Email or phone number"
+                  style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1.5px solid rgba(255,255,255,0.15)",
+                    borderRadius:12,padding:"14px 16px",fontSize:15,color:"#f9fafb",outline:"none",
+                    boxSizing:"border-box",marginBottom:10,fontFamily:"'Barlow',sans-serif"}}/>
+                <button onClick={function(){
+                  if(!waitlistInput.trim())return;
+                  fetch("https://formspree.io/f/xrevqzgk",{
+                    method:"POST",headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({contact:waitlistInput.trim(),source:"drafted.games",league:csLg.name})
+                  }).catch(function(){});
+                  setWaitlistDone(true);
+                }} style={{
+                  width:"100%",background:csLg.color,color:"#07090f",border:"none",borderRadius:12,
+                  padding:"14px",fontSize:15,fontWeight:800,fontFamily:"'Barlow Condensed',sans-serif",
+                  letterSpacing:"0.08em",cursor:"pointer",textTransform:"uppercase",marginBottom:6}}>Notify Me</button>
+              </>
+            ):(
+              <div style={{background:"rgba(74,222,128,0.1)",border:"1px solid rgba(74,222,128,0.3)",
+                borderRadius:12,padding:"16px"}}>
+                <div style={{color:"#4ade80",fontWeight:700}}>You're on the list!</div>
+                <div style={{fontSize:11,color:"#6b7280",marginTop:4}}>We'll notify you when {csLg.name} launches.</div>
+              </div>
+            )}
+          </div>
+
+          <button onClick={function(){setShowComingSoon(null);setWaitlistDone(false);setWaitlistInput("");}}
+            style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",
+              borderRadius:12,padding:"12px 28px",color:"#f9fafb",fontSize:14,fontWeight:700,
+              cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.06em",
+              textTransform:"uppercase"}}>← Back to WNBA</button>
+        </div>
+      </div>
+    );
+  }
 
   if(showCelebration)return <CelebrationScreen onContinue={()=>{setShowCelebration(false);setPhase("result");}}/>;
 
@@ -697,11 +823,27 @@ export default function Game(){
     <div style={wrap}>
       {menuOpen&&<MenuOverlay/>}
       <div style={{width:"100%",paddingTop:20,paddingBottom:80}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
           <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900}}>🏆 Leaderboard</div>
           <button onClick={()=>setShowLeaderboard(false)} style={{background:"rgba(255,255,255,0.06)",
             border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"6px 12px",
             color:"#9ca3af",fontSize:12,cursor:"pointer"}}>← Back</button>
+        </div>
+        {/* League tabs */}
+        <div style={{display:"flex",gap:6,marginBottom:16}}>
+          {Object.entries(LEAGUES).map(function(entry){
+            const key=entry[0];const lg=entry[1];
+            const isSel=key==="wnba";
+            return(
+              <button key={key} style={{
+                flex:1,padding:"8px 4px",borderRadius:8,border:"none",cursor:lg.active?"pointer":"default",
+                background:isSel?lg.color+"22":"rgba(255,255,255,0.03)",
+                color:isSel?lg.color:lg.active?"#6b7280":"#374151",
+                fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,fontWeight:isSel?800:600,
+                letterSpacing:"0.06em",opacity:lg.active?1:0.5,
+              }}>{lg.name}</button>
+            );
+          })}
         </div>
         <div style={{fontSize:11,color:"#6b7280",letterSpacing:"0.1em",marginBottom:4}}>44-0 TEAMS ONLY · RESETS DAILY 9AM</div>
         <div style={{fontSize:11,color:"#4b5563",marginBottom:20}}>Ranked by combined OFF + DEF rating</div>
@@ -763,7 +905,14 @@ export default function Game(){
               style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1.5px solid rgba(255,255,255,0.15)",
                 borderRadius:12,padding:"14px 16px",fontSize:15,color:"#f9fafb",outline:"none",
                 boxSizing:"border-box",marginBottom:10,fontFamily:"'Barlow',sans-serif"}}/>
-            <button onClick={()=>{if(waitlistInput.trim())setWaitlistDone(true);}} style={{
+            <button onClick={()=>{
+              if(!waitlistInput.trim())return;
+              fetch("https://formspree.io/f/xrevqzgk",{
+                method:"POST",headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({contact:waitlistInput.trim(),source:"drafted.games"})
+              }).catch(function(){});
+              setWaitlistDone(true);
+            }} style={{
               width:"100%",background:"#f59e42",color:"#07090f",border:"none",borderRadius:12,
               padding:"14px",fontSize:15,fontWeight:800,fontFamily:"'Barlow Condensed',sans-serif",
               letterSpacing:"0.08em",cursor:"pointer",textTransform:"uppercase",marginBottom:12}}>Notify Me</button>
@@ -805,10 +954,14 @@ export default function Game(){
       {menuOpen&&<MenuOverlay/>}
       <div style={{position:"fixed",top:20,right:20,zIndex:10}}><HBurg/></div>
       <div style={{width:"100%",paddingTop:56,paddingBottom:80,textAlign:"center"}}>
-        <div style={{fontSize:11,letterSpacing:"0.3em",color:"#f59e42",marginBottom:12}}>WNBA · DRAFT GAME</div>
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:96,fontWeight:900,lineHeight:0.88,letterSpacing:"-0.03em"}}>
-          44<span style={{color:"#f59e42"}}>-</span>0
+        <div style={{fontSize:10,letterSpacing:"0.3em",color:"#6b7280",marginBottom:6}}>drafted.games</div>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:64,fontWeight:900,lineHeight:0.88,letterSpacing:"-0.01em",marginBottom:6}}>
+          DRAFTED
         </div>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:36,fontWeight:900,color:"#f59e42",letterSpacing:"-0.02em"}}>
+          44<span style={{color:"rgba(255,255,255,0.2)"}}>-</span>0
+        </div>
+        <div style={{fontSize:11,letterSpacing:"0.2em",color:"#f59e42",marginTop:6}}>WNBA DRAFT GAME</div>
         {username&&<div style={{fontSize:12,color:"#6b7280",marginTop:10}}>Playing as <span style={{color:"#9ca3af",fontWeight:600}}>{username}</span></div>}
         <div style={{color:"#6b7280",fontSize:13,marginTop:16,marginBottom:40,lineHeight:1.7}}>
           Build the greatest WNBA team of all time.<br/>Can you go undefeated?
@@ -1014,7 +1167,7 @@ export default function Game(){
               cta.textContent="I went "+result.wins+"-"+result.losses+", think you can do better?";
               const domain=document.createElement("div");
               domain.style.cssText="font-size:22px;font-weight:900;color:#f59e42;letter-spacing:-0.01em";
-              domain.textContent="44-0.com";
+              domain.textContent="drafted.games";
               footer.appendChild(cta);footer.appendChild(domain);
 
               card.appendChild(hdr);card.appendChild(rtgRow);card.appendChild(rLabel);
@@ -1063,8 +1216,9 @@ export default function Game(){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
           padding:"16px 0 12px",position:"sticky",top:0,background:"#07090f",
           zIndex:10,borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
-          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:900,letterSpacing:"-0.01em"}}>
-            44<span style={{color:"#f59e42"}}>-</span>0
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,letterSpacing:"0.02em",display:"flex",alignItems:"center",gap:8}}>
+            <span>DRAFTED</span>
+            <span style={{fontSize:12,color:"#f59e42",fontWeight:700}}>44-0</span>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <div style={{background:hoopIQ?"rgba(167,139,250,0.13)":"rgba(249,158,66,0.12)",

@@ -1,5 +1,5 @@
 export const metadata = {
-  title: '44-0 | WNBA Draft Game',
+  title: 'Drafted | WNBA Draft Game',
   description: 'Build the greatest WNBA team of all time. Can you go undefeated?',
 }
 export default function RootLayout({ children }) {
