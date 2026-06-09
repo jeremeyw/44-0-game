@@ -244,7 +244,8 @@ function simulateSeason(rosterSlots){
   const depthScore=(avgOff+avgDef)/2;
 
   // Defense multiplier — real gate to 40+ wins
-  const defMult=teamDef>=22?1.25:teamDef>=17?1.10:teamDef>=12?0.96:teamDef>=7?0.80:teamDef>=3?0.64:0.45;
+  // Softened — offensive teams penalized less, elite defense still rewarded
+  const defMult=teamDef>=22?1.25:teamDef>=17?1.12:teamDef>=12?1.00:teamDef>=7?0.88:teamDef>=3?0.75:0.58;
 
   // Positional balance
   const natGroups=filled.map(s=>playerPosGroups(s.player.pos)[0]);
@@ -272,29 +273,28 @@ function simulateSeason(rosterSlots){
   else if(score<78) raw=38+((score-62)/16)*4;
   else              raw=42+Math.min(2,(score-78)/10);
 
-  // Continuous ceiling — peak quality + depth both matter
-  // Elite defense can compensate for one weak link (masking applied above)
-  // Combined quality score for smoother ceiling
+  // Continuous ceiling — loosened so 44-0 is achievable with smart drafting
   const combinedQ=(peakQ*0.45+depthScore*0.55);
   let ceiling;
-  if(peakQ>=97&&depthScore>=90)       ceiling=44;
-  else if(peakQ>=95&&depthScore>=88)  ceiling=43;
-  else if(combinedQ>=92&&depthScore>=88) ceiling=43;
-  else if(peakQ>=93&&depthScore>=86)  ceiling=41;
-  else if(combinedQ>=91&&depthScore>=87) ceiling=41;
-  else if(peakQ>=90&&depthScore>=88)  ceiling=41;
-  else if(peakQ>=93&&depthScore>=83)  ceiling=39;
-  else if(peakQ>=90&&depthScore>=85)  ceiling=39;
-  else if(combinedQ>=89&&depthScore>=86) ceiling=39;
-  else if(peakQ>=88&&depthScore>=84)  ceiling=37;
-  else if(combinedQ>=87&&depthScore>=85) ceiling=37;
-  else if(peakQ>=90&&depthScore>=81)  ceiling=34;
-  else if(peakQ>=86&&depthScore>=83)  ceiling=34;
-  else if(combinedQ>=85&&depthScore>=83) ceiling=34;
-  else if(peakQ>=84&&depthScore>=82)  ceiling=30;
-  else if(combinedQ>=83&&depthScore>=82) ceiling=30;
-  else if(peakQ>=82&&depthScore>=80)  ceiling=26;
-  else if(combinedQ>=80&&depthScore>=80) ceiling=26;
+  if(peakQ>=97&&depthScore>=87)       ceiling=44;
+  else if(peakQ>=95&&depthScore>=85)  ceiling=44;
+  else if(combinedQ>=93&&depthScore>=86) ceiling=44;
+  else if(peakQ>=93&&depthScore>=86)  ceiling=43;
+  else if(combinedQ>=91&&depthScore>=85) ceiling=43;
+  else if(peakQ>=90&&depthScore>=86)  ceiling=41;
+  else if(combinedQ>=89&&depthScore>=85) ceiling=41;
+  else if(peakQ>=93&&depthScore>=81)  ceiling=39;
+  else if(peakQ>=90&&depthScore>=83)  ceiling=39;
+  else if(combinedQ>=88&&depthScore>=83) ceiling=39;
+  else if(peakQ>=88&&depthScore>=82)  ceiling=37;
+  else if(combinedQ>=86&&depthScore>=83) ceiling=37;
+  else if(peakQ>=90&&depthScore>=79)  ceiling=34;
+  else if(peakQ>=86&&depthScore>=81)  ceiling=34;
+  else if(combinedQ>=84&&depthScore>=81) ceiling=34;
+  else if(peakQ>=84&&depthScore>=80)  ceiling=30;
+  else if(combinedQ>=82&&depthScore>=80) ceiling=30;
+  else if(peakQ>=82&&depthScore>=78)  ceiling=26;
+  else if(combinedQ>=80&&depthScore>=78) ceiling=26;
   else if(peakQ>=80)                  ceiling=22;
   else if(peakQ>=75)                  ceiling=17;
   else                                ceiling=12;
@@ -493,6 +493,7 @@ export default function Game(){
   const [showConfirmReset,setShowConfirmReset]=useState(false);
   const [currentLeague,setCurrentLeague]=useState("wnba");
   const [showComingSoon,setShowComingSoon]=useState(null);
+  const [showGameInfo,setShowGameInfo]=useState(false);
 
   const [playersLoaded, setPlayersLoaded] = useState(false);
 
@@ -716,6 +717,11 @@ export default function Game(){
           padding:"14px 0",textAlign:"left",cursor:"pointer",fontFamily:"'Barlow',sans-serif",
           fontSize:14,fontWeight:600,color:"#e5e7eb",marginTop:16}}>🏆  Leaderboard</button>
 
+        {/* Game Info */}
+        <button onClick={()=>{setMenuOpen(false);setShowGameInfo(true);}} style={{
+          background:"none",border:"none",borderBottom:"1px solid rgba(255,255,255,0.06)",
+          padding:"14px 0",textAlign:"left",cursor:"pointer",fontFamily:"'Barlow',sans-serif",
+          fontSize:14,fontWeight:600,color:"#e5e7eb"}}>ℹ️  How Ratings Work</button>
         {/* Waitlist */}
         <button onClick={()=>{setMenuOpen(false);setShowWaitlist(true);}} style={{
           background:"none",border:"none",borderBottom:"1px solid rgba(255,255,255,0.06)",
@@ -733,6 +739,79 @@ export default function Game(){
         44<span style={{color:"#f59e42"}}>-</span>0
       </div>
       <div style={{fontSize:12,color:"#4b5563",letterSpacing:"0.14em"}}>LOADING...</div>
+    </div>
+  );
+
+  // ── GAME INFO PAGE ───────────────────────────────────────────────────────────
+  if(showGameInfo) return(
+    <div style={wrap}>
+      {menuOpen&&<MenuOverlay/>}
+      <div style={{width:"100%",paddingTop:20,paddingBottom:80}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24}}>
+          <div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900}}>How Ratings Work</div>
+            <div style={{fontSize:11,color:"#4b5563",marginTop:2}}>The system behind every player-season</div>
+          </div>
+          <button onClick={()=>setShowGameInfo(false)} style={{background:"rgba(255,255,255,0.06)",
+            border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"6px 12px",
+            color:"#9ca3af",fontSize:12,cursor:"pointer",fontFamily:"'Barlow',sans-serif"}}>← Back</button>
+        </div>
+        {[
+          {title:"THE RATING SYSTEM",color:"#f59e42",emoji:"",items:[
+            {h:"Two ratings per season",b:"Every player-season has an Offense Rating and a Defense Rating. These are calculated independently based on that specific year — not career reputation."},
+            {h:"Season specificity matters",b:"The same player can appear across multiple seasons. Drafting the right year is just as important as drafting the right player."},
+            {h:"Era context",b:"Players are compared to their peers in that season. A dominant 2002 scorer is rated against 2002 competition, not all-time averages."},
+          ]},
+          {title:"OFFENSE RATING",color:"#f59e42",emoji:"⚡ ",items:[
+            {h:"Scoring & efficiency",b:"Raw points per game combined with how efficiently a player scored. High volume with poor efficiency doesn't tell the full story."},
+            {h:"Playmaking",b:"Assists and the ability to create offense for teammates, not just yourself."},
+            {h:"Overall offensive impact",b:"Advanced metrics that capture total offensive contribution relative to teammates and era."},
+          ]},
+          {title:"DEFENSE RATING",color:"#60a5fa",emoji:"🛡 ",items:[
+            {h:"Stops & disruption",b:"Steals and blocks carry significant weight. Elite shot-blockers and pickpockets are rewarded accordingly."},
+            {h:"Rebounding",b:"Defensive rebounding ends possessions and limits second chances. Elite rebounders get a meaningful boost."},
+            {h:"Defensive efficiency",b:"How well a player's team defended with them on the floor — captures things raw stats don't always show."},
+          ]},
+          {title:"AWARD BOOSTS",color:"#a78bfa",emoji:"🏆 ",items:[
+            {h:"MVP & All-WNBA",b:"MVP winners and All-WNBA selections receive an offensive boost. First team earns more than second team."},
+            {h:"DPOY & All-Defense",b:"Defensive Player of the Year and All-Defensive selections receive a defensive boost."},
+            {h:"Why awards matter",b:"Hardware signals elite performance that advanced stats don't always fully capture."},
+          ]},
+          {title:"SEASON & DURABILITY",color:"#4ade80",emoji:"📅 ",items:[
+            {h:"Games played",b:"Players with very few games in a season may have their rating adjusted slightly — small sample sizes are less reliable."},
+            {h:"2026 is live",b:"Current season players carry their real stats as they stand today. No durability penalty for an ongoing season."},
+            {h:"Historical eras",b:"The league has evolved significantly since 1997. The system accounts for era differences when calculating ratings."},
+          ]},
+          {title:"BUILDING YOUR TEAM",color:"#f9fafb",emoji:"🏀 ",items:[
+            {h:"Balance wins",b:"A team of five elite scorers with no defenders won't go 44-0. You need both sides of the ball."},
+            {h:"Elite defenders cover for scorers",b:"Three elite defenders can mask a pure scorer's defensive weaknesses — just like in real basketball."},
+            {h:"Position matters",b:"Playing a player out of position comes with a penalty. Natural lineups earn a chemistry boost."},
+            {h:"Star power has a floor",b:"Even with weak role players, true stars will carry a team to a winning record. But going 44-0 requires quality throughout."},
+          ]},
+        ].map((section,si)=>(
+          <div key={si} style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",
+            borderRadius:14,padding:"16px",marginBottom:10}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:11,fontWeight:700,
+              letterSpacing:"0.16em",color:section.color,marginBottom:12}}>{section.emoji}{section.title}</div>
+            {section.items.map((item,ii)=>(
+              <div key={ii} style={{display:"flex",gap:10,marginBottom:ii<section.items.length-1?10:0}}>
+                <div style={{width:6,height:6,borderRadius:"50%",background:section.color,marginTop:6,flexShrink:0}}/>
+                <div style={{fontSize:13,color:"#9ca3af",lineHeight:1.55,fontFamily:"'Barlow',sans-serif"}}>
+                  <span style={{color:"#e5e7eb",fontWeight:600}}>{item.h} — </span>{item.b}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+        <div style={{background:"rgba(245,158,66,0.06)",border:"1px solid rgba(245,158,66,0.18)",
+          borderRadius:14,padding:"16px",textAlign:"center",marginTop:4}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:36,fontWeight:900,
+            color:"#f59e42",letterSpacing:"-0.02em",marginBottom:6}}>44-0</div>
+          <div style={{fontSize:12,color:"#9ca3af",lineHeight:1.6,fontFamily:"'Barlow',sans-serif"}}>
+            Going undefeated requires elite players at multiple positions on both ends of the floor. Every slot on your roster needs to contribute. The right season matters as much as the right player.
+          </div>
+        </div>
+      </div>
     </div>
   );
 
@@ -1032,34 +1111,67 @@ export default function Game(){
               </div>
             ))}
           </div>
+          {/* Team combined stats */}
+          {(()=>{
+            const filled=slots.filter(s=>s.player);
+            const tot5=(stat)=>filled.reduce((sum,s)=>sum+(s.player[stat]||0),0);
+            const avg5=(stat)=>(tot5(stat)/Math.max(1,filled.length));
+            return(
+              <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",
+                borderRadius:12,padding:"14px",marginBottom:14}}>
+                <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.14em",marginBottom:12,fontFamily:"'Barlow',sans-serif"}}>TEAM STATS</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr",gap:4,textAlign:"center",marginBottom:12}}>
+                  {[["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].map(([lbl,key])=>(
+                    <div key={lbl}>
+                      <div style={{fontSize:18,fontWeight:900,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{avg5(key).toFixed(1)}</div>
+                      <div style={{fontSize:9,color:"#6b7280",fontFamily:"'Barlow',sans-serif",marginTop:2}}>{lbl}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  <div style={{background:"rgba(245,158,66,0.08)",border:"1px solid rgba(245,158,66,0.18)",borderRadius:9,padding:"9px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.1em",marginBottom:3,fontFamily:"'Barlow',sans-serif"}}>TEAM OFF RTG</div>
+                    <div style={{fontSize:24,fontWeight:900,color:"#f59e42",fontFamily:"'Barlow Condensed',sans-serif"}}>{result.teamOff}</div>
+                  </div>
+                  <div style={{background:"rgba(96,165,250,0.08)",border:"1px solid rgba(96,165,250,0.18)",borderRadius:9,padding:"9px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.1em",marginBottom:3,fontFamily:"'Barlow',sans-serif"}}>TEAM DEF RTG</div>
+                    <div style={{fontSize:24,fontWeight:900,color:"#60a5fa",fontFamily:"'Barlow Condensed',sans-serif"}}>{result.teamDef}</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           <div style={{marginBottom:16}}>
-            <div style={{fontSize:10,color:"#6b7280",letterSpacing:"0.1em",marginBottom:10}}>YOUR ROSTER</div>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {slots.map(s=>{
-                if(!s.player)return null;
+            <div style={{fontSize:10,color:"#6b7280",letterSpacing:"0.1em",marginBottom:10,fontFamily:"'Barlow',sans-serif"}}>YOUR ROSTER</div>
+            <div style={{display:"flex",flexDirection:"column",gap:7}}>
+              {["PG","SG","SF","PF","C"].map(slotKey=>{
+                const s=slots.find(sl=>sl.key===slotKey);
+                if(!s||!s.player)return null;
                 const p=s.player;const c=posColor(p.pos);
                 const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
-                const oop=getPosPenalty(p.pos,s.posGroup)<1.0;
+                const teamAbbr={"Las Vegas Aces":"LVA","New York Liberty":"NYL","Seattle Storm":"SEA",
+                  "Minnesota Lynx":"MIN","Connecticut Sun":"CON","Indiana Fever":"IND",
+                  "Phoenix Mercury":"PHX","Los Angeles Sparks":"LAL","Houston Comets":"HOU",
+                  "Chicago Sky":"CHI","Washington Mystics":"WAS","Atlanta Dream":"ATL",
+                  "Dallas Wings":"DAL","Golden State Valkyries":"GSV","Toronto Tempo":"TOR",
+                  "Sacramento Monarchs":"SAC","Charlotte Sting":"CHA","Cleveland Rockers":"CLE",
+                  "Miami Sol":"MIA","Portland Fire":"POR"};
+                const abbr=teamAbbr[p.team]||p.team.slice(0,3).toUpperCase();
                 return(
-                  <div key={s.key} style={{display:"flex",alignItems:"center",gap:10,
-                    background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",
-                    borderRadius:12,padding:"11px 13px"}}>
-                    <Avatar player={p} size={36}/>
+                  <div key={s.key} style={{display:"flex",alignItems:"center",gap:8,
+                    background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",
+                    borderRadius:11,padding:"9px 11px"}}>
+                    <Avatar player={p} size={34}/>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,
-                          color:"#f9fafb",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
-                        {oop&&<div style={{fontSize:8,color:"#f87171",background:"rgba(248,113,113,0.12)",
-                          border:"1px solid rgba(248,113,113,0.25)",borderRadius:3,padding:"1px 4px",
-                          letterSpacing:"0.05em",flexShrink:0}}>OOP</div>}
-                      </div>
-                      <div style={{fontSize:10,color:"#6b7280",marginTop:2}}>
-                        <span style={{color:c,fontWeight:600}}>{s.key}</span> · {p.season}
+                      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,
+                        color:"#f9fafb",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
+                      <div style={{fontSize:10,color:"#6b7280",marginTop:1,fontFamily:"'Barlow',sans-serif"}}>
+                        <span style={{color:c,fontWeight:700}}>{s.key}</span> · {abbr} · {p.season}
                       </div>
                     </div>
                     <div style={{textAlign:"right",flexShrink:0}}>
-                      <div style={{fontSize:14,fontWeight:800,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{tot}</div>
-                      <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.06em"}}>TOTAL</div>
+                      <div style={{fontSize:13,fontWeight:800,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{tot}</div>
+                      <div style={{fontSize:9,color:"#4b5563",fontFamily:"'Barlow',sans-serif"}}>TOTAL</div>
                     </div>
                   </div>
                 );
@@ -1106,8 +1218,24 @@ export default function Game(){
               hdr.appendChild(lbl);hdr.appendChild(rec);hdr.appendChild(tierLbl);hdr.appendChild(msg);
 
               // Ratings
+              // Team stats row
+              const statsRow=document.createElement("div");
+              statsRow.style.cssText="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;text-align:center";
+              const filledPlayers=slots.filter(function(s){return s.player;});
+              [["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].forEach(function(sk){
+                const avg=(filledPlayers.reduce(function(sum,s){return sum+(s.player[sk[1]]||0);},0)/Math.max(1,filledPlayers.length)).toFixed(1);
+                const cell=document.createElement("div");
+                const vDiv=document.createElement("div");
+                vDiv.style.cssText="font-size:15px;font-weight:800;color:#f9fafb;font-family:Barlow Condensed,sans-serif";
+                vDiv.textContent=avg;
+                const lDiv=document.createElement("div");
+                lDiv.style.cssText="font-size:8px;color:#6b7280;font-family:Barlow,sans-serif;margin-top:2px";
+                lDiv.textContent=sk[0];
+                cell.appendChild(vDiv);cell.appendChild(lDiv);statsRow.appendChild(cell);
+              });
+
               const rtgRow=document.createElement("div");
-              rtgRow.style.cssText="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px";
+              rtgRow.style.cssText="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px";
               [["TEAM OFF RTG",result.teamOff,"#f59e42"],["TEAM DEF RTG",result.teamDef,"#60a5fa"]].forEach(function(item){
                 const box=document.createElement("div");
                 box.style.cssText="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 10px;text-align:center";
@@ -1127,32 +1255,37 @@ export default function Game(){
 
               // Roster rows
               const rosterDiv=document.createElement("div");
-              slots.filter(function(s){return s.player;}).forEach(function(s){
+              const teamAbbrMap={"Las Vegas Aces":"LVA","New York Liberty":"NYL","Seattle Storm":"SEA","Minnesota Lynx":"MIN","Connecticut Sun":"CON","Indiana Fever":"IND","Phoenix Mercury":"PHX","Los Angeles Sparks":"LAL","Houston Comets":"HOU","Chicago Sky":"CHI","Washington Mystics":"WAS","Atlanta Dream":"ATL","Dallas Wings":"DAL","Golden State Valkyries":"GSV","Toronto Tempo":"TOR","Sacramento Monarchs":"SAC","Charlotte Sting":"CHA","Cleveland Rockers":"CLE","Miami Sol":"MIA","Portland Fire":"POR"};
+              const slotOrder=["PG","SG","SF","PF","C"];
+              slotOrder.forEach(function(slotKey){
+                const s=slots.find(function(sl){return sl.key===slotKey;});
+                if(!s||!s.player)return;
                 const p=s.player;
                 const c=p.pos&&p.pos.startsWith("G")?"#f59e42":p.pos&&p.pos.startsWith("C")?"#60a5fa":"#4ade80";
                 const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
                 const ini=p.name.split(" ").map(function(w){return w[0];}).join("").slice(0,2).toUpperCase();
+                const abbr=teamAbbrMap[p.team]||p.team.slice(0,3).toUpperCase();
                 const row=document.createElement("div");
-                row.style.cssText="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:11px 13px;margin-bottom:7px";
+                row.style.cssText="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:9px 11px;margin-bottom:5px";
                 const av=document.createElement("div");
-                av.style.cssText="width:36px;height:36px;border-radius:50%;background:"+c+"22;border:1.5px solid "+c+"66;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:"+c+";flex-shrink:0";
+                av.style.cssText="width:32px;height:32px;border-radius:50%;background:"+c+"22;border:1px solid "+c+"55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:"+c+";flex-shrink:0";
                 av.textContent=ini;
                 const info=document.createElement("div");
                 info.style.cssText="flex:1;min-width:0";
                 const nm=document.createElement("div");
-                nm.style.cssText="font-size:15px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+                nm.style.cssText="font-size:14px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:Barlow Condensed,sans-serif";
                 nm.textContent=p.name;
                 const sub=document.createElement("div");
-                sub.style.cssText="font-size:10px;color:#6b7280;margin-top:2px;font-family:Barlow,sans-serif";
-                sub.textContent=s.key+" · "+p.season;
+                sub.style.cssText="font-size:9px;color:#6b7280;margin-top:1px;font-family:Barlow,sans-serif";
+                sub.textContent=slotKey+" · "+abbr+" · "+p.season;
                 info.appendChild(nm);info.appendChild(sub);
                 const stat=document.createElement("div");
                 stat.style.cssText="text-align:right;flex-shrink:0";
                 const sv=document.createElement("div");
-                sv.style.cssText="font-size:14px;font-weight:800;color:#f9fafb";
+                sv.style.cssText="font-size:13px;font-weight:800;color:#f9fafb;font-family:Barlow Condensed,sans-serif";
                 sv.textContent=tot;
                 const sl=document.createElement("div");
-                sl.style.cssText="font-size:9px;color:#6b7280;font-family:Barlow,sans-serif";
+                sl.style.cssText="font-size:8px;color:#4b5563;font-family:Barlow,sans-serif";
                 sl.textContent="TOTAL";
                 stat.appendChild(sv);stat.appendChild(sl);
                 row.appendChild(av);row.appendChild(info);row.appendChild(stat);
@@ -1170,7 +1303,7 @@ export default function Game(){
               domain.textContent="drafted.games";
               footer.appendChild(cta);footer.appendChild(domain);
 
-              card.appendChild(hdr);card.appendChild(rtgRow);card.appendChild(rLabel);
+              card.appendChild(hdr);card.appendChild(statsRow);card.appendChild(rtgRow);card.appendChild(rLabel);
               card.appendChild(rosterDiv);card.appendChild(footer);
               document.body.appendChild(card);
 
@@ -1238,9 +1371,17 @@ export default function Game(){
             </div>
             {spinning?(
               <div>
-                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:700,
-                  minHeight:40,color:spinLanded?tc.primary:"#9ca3af",transition:"color 0.4s"}}>{spinLabel}</div>
-                {spinLanded&&<div style={{fontSize:11,color:"#4b5563",marginTop:10,letterSpacing:"0.1em"}}>LOADING BOARD...</div>}
+                <div key={spinLabel} style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:700,
+                  minHeight:40,color:spinLanded?tc.primary:"#9ca3af",
+                  transition:"color 0.4s, transform 0.08s",
+                  transform:"translateX(0)",
+                  animation:spinLanded?"none":"slideIn 0.08s ease-out"}}>{spinLabel}</div>
+                {spinLanded&&<div style={{fontSize:11,color:"#4b5563",marginTop:10,letterSpacing:"0.1em",
+                  animation:"fadeIn 0.3s ease-out"}}>LOADING BOARD...</div>}
+                <style>{`
+                  @keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
+                  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+                `}</style>
               </div>
             ):(
               <button onClick={()=>doSpin()} style={{background:"#f59e42",color:"#07090f",border:"none",
