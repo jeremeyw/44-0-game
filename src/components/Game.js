@@ -192,24 +192,41 @@ function seededRand(seed){
 }
 
 function getDailyBoards(){
-  // Find All-Timers (95+ rating) not used in last 5 days
-  const allTimers=PLAYER_DB.filter(p=>p.off>=95||p.def>=95);
-  const uniqueAllTimers=[...new Map(allTimers.map(p=>[p.name,p])).values()];
+  if(!PLAYER_DB.length) return [];
   const key=getDailyKey();
   const rand=seededRand(key);
 
-  // Shuffle All-Timers with seeded random
-  const shuffled=[...uniqueAllTimers].sort(()=>rand()-0.5);
+  // Step 1: Guarantee at least one All-Timer franchise in the daily
+  const allTimerTeams=[...new Set(PLAYER_DB.filter(p=>p.off>=95||p.def>=95).map(p=>p.team))];
+  const shuffledAT=[...allTimerTeams].sort(()=>rand()-0.5);
+  const anchorTeam=shuffledAT[0];
 
-  // Pick the first All-Timer's team as anchor franchise
-  const anchor=shuffled[0];
-  const anchorTeam=anchor.team;
+  // Step 2: Fill remaining 4 from all teams (seeded)
+  const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
+  const others=allTeams.filter(t=>t!==anchorTeam).sort(()=>rand()-0.5);
+  return[anchorTeam,...others.slice(0,4)];
+}
 
-  // Generate 5 teams seeded by date — anchor team first
-  const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))];
-  const otherTeams=allTeams.filter(t=>t!==anchorTeam);
-  const shuffledOthers=[...otherTeams].sort(()=>rand()-0.5);
-  return[anchorTeam,...shuffledOthers.slice(0,4)];
+function getDailyBoardsFull(){
+  // Returns full board data — identical for every user on same day
+  if(!PLAYER_DB.length) return [];
+  const teams=getDailyBoards();
+  const key=getDailyKey();
+  const boards=[];
+  teams.forEach((team,ti)=>{
+    const rand=seededRand(key*31+ti*7);
+    const pool=PLAYER_DB.filter(p=>p.team===team);
+    // Sort deterministically first, then shuffle with seed
+    const sorted=[...pool].sort((a,b)=>b.off+b.def-(a.off+a.def));
+    // Guarantee top 3 elite players appear
+    const elite=sorted.filter(p=>p.off>=80||p.def>=80).slice(0,5);
+    const rest=sorted.filter(p=>p.off<80&&p.def<80);
+    // Seeded shuffle of each group
+    const shuffleSeeded=(arr)=>[...arr].sort(()=>rand()-0.5);
+    const board=[...shuffleSeeded(elite).slice(0,3),...shuffleSeeded(rest).slice(0,7)].slice(0,10);
+    boards.push({team,board});
+  });
+  return boards;
 }
 
 function calcDailyGrade(userWins,maxWins){
@@ -600,6 +617,7 @@ export default function Game(){
             setDailySlots(stored.slots||null);
             setDailyGrade(stored.grade||null);
             setDailyMsg(stored.msg||"");
+            if(stored.bestRoster) setDailyBestRoster(stored.bestRoster);
           }
         }catch{}
         // Load real leaderboard from Supabase
@@ -632,7 +650,9 @@ export default function Game(){
   function doSpin(opts={}){
     const{exclude=null,hometown=false}=opts;
     setSpinning(true);setSpinLanded(false);setPick1(null);setPick2(null);setSelSlot(null);
-    const dailyTeamsList=isDailyMode?getDailyBoards():null;
+    // Daily mode uses pre-seeded board list
+    const dailyBoardsFull=isDailyMode?getDailyBoardsFull():null;
+    const dailyTeamsList=dailyBoardsFull?dailyBoardsFull.map(b=>b.team):null;
     const allTeams=dailyTeamsList||[...new Set(PLAYER_DB.map(p=>p.team))].sort();
     // Load recently seen teams from localStorage
     let recentTeams=[];
@@ -674,7 +694,14 @@ export default function Game(){
         setSpinLabel(chosen);setSpinLanded(true);
         setTimeout(()=>{
           setCurrentTeam(chosen);
-          setBoard(generateBoard(chosen,draftedNames,hometown));
+          // Daily mode: use pre-seeded deterministic board
+          if(isDailyMode&&dailyBoardsFull){
+            const dailyBoard=dailyBoardsFull.find(b=>b.team===chosen);
+            const filteredBoard=dailyBoard?dailyBoard.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
+            setBoard(filteredBoard.length?filteredBoard:generateBoard(chosen,draftedNames,false));
+          } else {
+            setBoard(generateBoard(chosen,draftedNames,hometown));
+          }
           setSpinning(false);setPhase("pick");
         },1500);
       }
@@ -729,15 +756,19 @@ export default function Game(){
         setDailySlots(newSlots);
         setDailyGrade(grade);
         setDailyComplete(true);
-        // Find best possible roster from daily boards
-        const dailyTeams=getDailyBoards();
-        const allDailyPlayers=PLAYER_DB.filter(p=>dailyTeams.includes(p.team));
-        const topOff=[...allDailyPlayers].sort((a,b)=>b.off-a.off).slice(0,2);
-        const topDef=[...allDailyPlayers].filter(p=>!topOff.find(x=>x.name===p.name)).sort((a,b)=>b.def-a.def).slice(0,2);
-        const topC=[...allDailyPlayers].filter(p=>!topOff.find(x=>x.name===p.name)&&!topDef.find(x=>x.name===p.name)&&p.pos==="C").sort((a,b)=>(b.off+b.def)-(a.off+a.def)).slice(0,1);
-        setDailyBestRoster([...topOff,...topDef,...topC]);
+        // Best possible team — only from players that appeared on daily boards
+        const fullBoards=getDailyBoardsFull();
+        const boardPlayers=fullBoards.flatMap(b=>b.board);
+        // Find best 5 unique players by combined rating
+        const seen=new Set();
+        const uniqueBoardPlayers=boardPlayers.filter(p=>{
+          const k=playerBase(p.name);
+          if(seen.has(k))return false;seen.add(k);return true;
+        }).sort((a,b)=>(b.off+b.def)-(a.off+a.def));
+        setDailyBestRoster(uniqueBoardPlayers.slice(0,5));
         // Save to localStorage
-        try{localStorage.setItem("44o_daily",JSON.stringify({key:todayKey,result:res,slots:newSlots,grade,msg:res.tierMessage}));}catch{}
+        const saveBest=getDailyBoardsFull().flatMap(b=>b.board).filter((p,i,arr)=>arr.findIndex(x=>playerBase(x.name)===playerBase(p.name))===i).sort((a,b)=>(b.off+b.def)-(a.off+a.def)).slice(0,5);
+        try{localStorage.setItem("44o_daily",JSON.stringify({key:todayKey,result:res,slots:newSlots,grade,msg:res.tierMessage,bestRoster:saveBest}));}catch{}
         // Submit to Supabase daily leaderboard
         supaFetch("leaderboard",{method:"POST",body:JSON.stringify({
           username:username||"Anonymous",wins:res.wins,losses:res.losses,
@@ -978,7 +1009,10 @@ export default function Game(){
   );
 
   // ── DAILY CHALLENGE RESULT SCREEN ──────────────────────────────────────────
-  if(showDaily&&dailyComplete&&dailyResult){
+  // Priority: overlay screens win over daily
+  if(showDaily&&(showLeaderboard||showWaitlist||showGameInfo||showComingSoon||showConfirmReset)){
+    // Fall through to those screens below
+  } else if(showDaily&&dailyComplete&&dailyResult){
     const grade=dailyGrade||calcDailyGrade(dailyResult.wins,44);
     const tier=getTier(dailyResult.wins);
     const teamAbbrMap={"Las Vegas Aces":"LVA","New York Liberty":"NYL","Seattle Storm":"SEA","Minnesota Lynx":"MIN","Connecticut Sun":"CON","Indiana Fever":"IND","Phoenix Mercury":"PHX","Los Angeles Sparks":"LAL","Houston Comets":"HOU","Chicago Sky":"CHI","Washington Mystics":"WAS","Atlanta Dream":"ATL","Dallas Wings":"DAL","Golden State Valkyries":"GSV","Toronto Tempo":"TOR","Sacramento Monarchs":"SAC","Charlotte Sting":"CHA","Cleveland Rockers":"CLE","Miami Sol":"MIA","Portland Fire":"POR"};
@@ -1093,10 +1127,64 @@ export default function Game(){
 
           {/* Share button */}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            <button onClick={()=>{
-              const text=`Drafted Daily - ${new Date().toLocaleDateString("en-US",{month:"short",day:"numeric"})}\n${dailyResult.wins}-${dailyResult.losses} · Grade: ${grade.grade}\ndrafted.games`;
-              if(navigator.share){navigator.share({text,title:"Drafted Daily"}).catch(()=>{});}
-              else{navigator.clipboard?.writeText(text).catch(()=>{});}
+            <button onClick={async()=>{
+              if(!window.html2canvas){
+                await new Promise((res,rej)=>{
+                  const s=document.createElement("script");
+                  s.src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+                  s.onload=res;s.onerror=rej;document.head.appendChild(s);
+                });
+              }
+              const tAbbr={"Las Vegas Aces":"LVA","New York Liberty":"NYL","Seattle Storm":"SEA","Minnesota Lynx":"MIN","Connecticut Sun":"CON","Indiana Fever":"IND","Phoenix Mercury":"PHX","Los Angeles Sparks":"LAL","Houston Comets":"HOU","Chicago Sky":"CHI","Washington Mystics":"WAS","Atlanta Dream":"ATL","Dallas Wings":"DAL","Golden State Valkyries":"GSV","Toronto Tempo":"TOR","Sacramento Monarchs":"SAC","Charlotte Sting":"CHA","Cleveland Rockers":"CLE","Miami Sol":"MIA","Portland Fire":"POR"};
+              const dStr=new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});
+              const dc=document.createElement("div");
+              dc.style.cssText="position:fixed;left:-9999px;top:0;width:390px;background:#07090f;color:#f9fafb;padding:20px 16px 24px;box-sizing:border-box;font-family:Barlow Condensed,sans-serif;";
+              function el(tag,css,txt){const e=document.createElement(tag);if(css)e.style.cssText=css;if(txt!==undefined)e.textContent=txt;return e;}
+              function ap(parent,...children){children.forEach(c=>parent.appendChild(c));return parent;}
+              // Header row
+              const topRow=el("div","display:flex;align-items:center;justify-content:space-between;margin-bottom:14px");
+              ap(topRow,ap(el("div"),el("div","font-size:9px;color:#f59e42;letter-spacing:0.2em;font-weight:700","DRAFTED · DAILY"),el("div","font-size:10px;color:#4b5563;font-family:Barlow,sans-serif",dStr)),ap(el("div","text-align:right"),el("div","font-size:8px;color:#6b7280;font-family:Barlow,sans-serif","NEXT DRAFT IN"),el("div","font-size:12px;font-weight:800;color:#f9fafb",dailyCountdown)));
+              // Record + Grade
+              const rgRow=el("div","display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px");
+              const rb=ap(el("div","background:rgba(74,222,128,0.06);border:1px solid rgba(74,222,128,0.18);border-radius:12px;padding:12px;text-align:center"),el("div","font-size:8px;color:#6b7280;letter-spacing:0.1em;font-family:Barlow,sans-serif","RECORD"),el("div","font-size:42px;font-weight:900;line-height:0.9;color:"+tier.color,dailyResult.wins+"-"+dailyResult.losses),el("div","font-size:8px;color:"+tier.color+";margin-top:5px;letter-spacing:0.1em;font-weight:700",tier.label));
+              const gb=ap(el("div","background:rgba(245,158,66,0.06);border:1px solid rgba(245,158,66,0.18);border-radius:12px;padding:12px;text-align:center"),el("div","font-size:8px;color:#6b7280;letter-spacing:0.1em;font-family:Barlow,sans-serif","DRAFT GRADE"),el("div","font-size:42px;font-weight:900;line-height:0.9;color:"+grade.color,grade.grade));
+              ap(rgRow,rb,gb);
+              // Stats
+              const sr=el("div","background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:9px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;text-align:center");
+              const fp3=rosterSlots.filter(s=>s.player);
+              [["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].forEach(sk=>{
+                const tot=(fp3.reduce((sum,s)=>sum+(s.player[sk[1]]||0),0)).toFixed(1);
+                ap(sr,ap(el("div"),el("div","font-size:13px;font-weight:800;color:#f9fafb",tot),el("div","font-size:8px;color:#6b7280;font-family:Barlow,sans-serif;margin-top:1px",sk[0])));
+              });
+              // Roster
+              const rl=el("div","font-size:9px;color:#6b7280;letter-spacing:0.1em;margin-bottom:7px;font-family:Barlow,sans-serif","YOUR PICKS");
+              const rd=el("div");
+              ["PG","SG","SF","PF","C"].forEach(sk=>{
+                const s=rosterSlots.find(sl=>sl.key===sk);if(!s||!s.player)return;
+                const p=s.player;const c=p.pos&&p.pos.startsWith("G")?"#f59e42":p.pos&&p.pos.startsWith("C")?"#60a5fa":"#4ade80";
+                const tot2=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
+                const ini=p.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+                const abbr=tAbbr[p.team]||p.team.slice(0,3).toUpperCase();
+                const row=ap(el("div","display:flex;align-items:center;gap:7px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:9px;padding:7px 9px;margin-bottom:4px"),
+                  el("div","width:26px;height:26px;border-radius:50%;background:"+c+"22;border:1px solid "+c+"55;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:"+c+";flex-shrink:0",ini),
+                  ap(el("div","flex:1;min-width:0"),el("div","font-size:12px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",p.name+(s.boosted?" ⚡":"")),el("div","font-size:8px;color:#6b7280;font-family:Barlow,sans-serif",sk+" · "+abbr+" · "+p.season)),
+                  ap(el("div","text-align:right;flex-shrink:0"),el("div","font-size:11px;font-weight:800;color:#f9fafb",tot2),el("div","font-size:7px;color:#4b5563;font-family:Barlow,sans-serif","TOTAL")));
+                rd.appendChild(row);
+              });
+              // CTA
+              const cta=ap(el("div","margin-top:12px;text-align:center;border-top:1px solid rgba(255,255,255,0.06);padding-top:12px"),el("div","font-size:11px;color:#9ca3af;font-family:Barlow,sans-serif;margin-bottom:4px","Can you beat my draft grade?"),el("div","font-size:19px;font-weight:900;color:#f59e42","drafted.games"));
+              ap(dc,topRow,rgRow,sr,rl,rd,cta);
+              document.body.appendChild(dc);
+              try{
+                await document.fonts.ready;
+                const cnv=await window.html2canvas(dc,{backgroundColor:"#07090f",scale:2,width:390,windowWidth:430});
+                document.body.removeChild(dc);
+                cnv.toBlob(async blob=>{
+                  const file=new File([blob],"drafted-daily.png",{type:"image/png"});
+                  if(navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],title:"Drafted Daily"});}catch{window.open(URL.createObjectURL(blob),"_blank");}}
+                  else{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="drafted-daily.png";a.click();}
+                },"image/png");
+              }catch(e){if(document.body.contains(dc))document.body.removeChild(dc);}
             }} style={{width:"100%",background:"rgba(255,255,255,0.06)",color:"#f9fafb",
               border:"1px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px",fontSize:15,
               fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
@@ -1430,20 +1518,11 @@ export default function Game(){
             <div style={{fontSize:13,letterSpacing:"0.18em",color:tier.color,marginTop:10,textTransform:"uppercase",fontWeight:700}}>{tier.label}</div>
             <div style={{fontSize:13,color:"#6b7280",marginTop:8,fontStyle:"italic"}}>{tierMsg}</div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:20}}>
-            {[["TEAM OFF RTG",result.teamOff,"#f59e42"],["TEAM DEF RTG",result.teamDef,"#60a5fa"]].map(([l,v,c])=>(
-              <div key={l} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",
-                borderRadius:12,padding:"14px 10px",textAlign:"center"}}>
-                <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.1em",marginBottom:4}}>{l}</div>
-                <div style={{fontSize:28,fontWeight:900,color:c,fontFamily:"'Barlow Condensed',sans-serif"}}>{v}</div>
-              </div>
-            ))}
-          </div>
+
           {/* Team combined stats */}
           {(()=>{
             const filled=slots.filter(s=>s.player);
             const tot5=(stat)=>filled.reduce((sum,s)=>sum+(s.player[stat]||0),0);
-            const avg5=(stat)=>(tot5(stat)/Math.max(1,filled.length));
             return(
               <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",
                 borderRadius:12,padding:"14px",marginBottom:14}}>
@@ -1451,7 +1530,7 @@ export default function Game(){
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr",gap:4,textAlign:"center",marginBottom:12}}>
                   {[["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].map(([lbl,key])=>(
                     <div key={lbl}>
-                      <div style={{fontSize:18,fontWeight:900,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{avg5(key).toFixed(1)}</div>
+                      <div style={{fontSize:18,fontWeight:900,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{tot5(key).toFixed(1)}</div>
                       <div style={{fontSize:9,color:"#6b7280",fontFamily:"'Barlow',sans-serif",marginTop:2}}>{lbl}</div>
                     </div>
                   ))}
@@ -1506,12 +1585,7 @@ export default function Game(){
               })}
             </div>
           </div>
-          {result.perfectLineup&&(
-            <div style={{background:"rgba(74,222,128,0.07)",border:"1px solid rgba(74,222,128,0.18)",
-              borderRadius:10,padding:"9px 13px",fontSize:12,color:"#4ade80",textAlign:"center",marginBottom:14}}>
-              ✓ Perfect natural lineup 2G/2F/1C — chemistry boost applied
-            </div>
-          )}
+
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <button onClick={async()=>{
               if(!window.html2canvas){
@@ -1660,10 +1734,28 @@ export default function Game(){
               fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
               cursor:"pointer",textTransform:"uppercase",display:"flex",alignItems:"center",
               justifyContent:"center",gap:8}}>↑ Share Result</button>
-            <button onClick={()=>reset(true)} style={{width:"100%",background:"#f59e42",color:"#07090f",
-              border:"none",borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
-              fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",cursor:"pointer",textTransform:"uppercase"}}>
-              Play Again</button>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>{
+                const currentMode=mode;
+                reset(true);
+                setTimeout(()=>setMode(currentMode),50);
+              }} style={{flex:2,background:"#f59e42",color:"#07090f",
+                border:"none",borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
+                fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",cursor:"pointer",
+                textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
+                Play Again
+              </button>
+              <button onClick={()=>{
+                const newMode=mode==="classic"?"hoopiq":"classic";
+                reset(true);
+                setTimeout(()=>setMode(newMode),50);
+              }} style={{flex:1,background:"rgba(255,255,255,0.06)",color:"#9ca3af",
+                border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,padding:"16px",fontSize:12,
+                fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.06em",
+                cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
+                {mode==="classic"?"Try HoopIQ":"Try Classic"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1682,11 +1774,15 @@ export default function Game(){
             <span style={{fontSize:12,color:"#f59e42",fontWeight:700}}>44-0</span>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <div style={{background:hoopIQ?"rgba(167,139,250,0.13)":"rgba(249,158,66,0.12)",
+            <button onClick={()=>{
+              const newMode=hoopIQ?"classic":"hoopiq";
+              reset(true);setTimeout(()=>setMode(newMode),50);
+            }} style={{background:hoopIQ?"rgba(167,139,250,0.13)":"rgba(249,158,66,0.12)",
               border:`1px solid ${hoopIQ?"#a78bfa33":"#f59e4233"}`,borderRadius:20,
-              padding:"3px 10px",fontSize:10,color:hoopIQ?"#a78bfa":"#f59e42",letterSpacing:"0.08em",fontWeight:700}}>
-              {hoopIQ?"HOOPIQ":"CLASSIC"}
-            </div>
+              padding:"3px 10px",fontSize:10,color:hoopIQ?"#a78bfa":"#f59e42",letterSpacing:"0.08em",fontWeight:700,
+              cursor:"pointer",WebkitTapHighlightColor:"transparent"}}>
+              {hoopIQ?"HOOPIQ ⇄":"CLASSIC ⇄"}
+            </button>
             <div style={{fontSize:11,color:"#6b7280"}}>{filledCount}/5</div>
             <HBurg/>
           </div>
