@@ -208,22 +208,25 @@ function getDailyBoards(){
 }
 
 function getDailyBoardsFull(){
-  // Returns full board data — identical for every user on same day
   if(!PLAYER_DB.length) return [];
   const teams=getDailyBoards();
   const key=getDailyKey();
   const boards=[];
+  const globalSeen=new Set(); // No duplicates across all 5 boards
+
   teams.forEach((team,ti)=>{
     const rand=seededRand(key*31+ti*7);
-    const pool=PLAYER_DB.filter(p=>p.team===team);
-    // Sort deterministically first, then shuffle with seed
+    const pool=PLAYER_DB.filter(p=>p.team===team&&!globalSeen.has(playerBase(p.name)));
     const sorted=[...pool].sort((a,b)=>b.off+b.def-(a.off+a.def));
-    // Guarantee top 3 elite players appear
-    const elite=sorted.filter(p=>p.off>=80||p.def>=80).slice(0,5);
+    const elite=sorted.filter(p=>p.off>=80||p.def>=80);
     const rest=sorted.filter(p=>p.off<80&&p.def<80);
-    // Seeded shuffle of each group
     const shuffleSeeded=(arr)=>[...arr].sort(()=>rand()-0.5);
-    const board=[...shuffleSeeded(elite).slice(0,3),...shuffleSeeded(rest).slice(0,7)].slice(0,10);
+    // Pick 3 elite + 7 others, all unique globally
+    const elitePicks=shuffleSeeded(elite).slice(0,3);
+    const restPicks=shuffleSeeded(rest).slice(0,7);
+    const board=[...elitePicks,...restPicks].slice(0,10);
+    // Register all picked players globally
+    board.forEach(p=>globalSeen.add(playerBase(p.name)));
     boards.push({team,board});
   });
   return boards;
@@ -621,7 +624,7 @@ export default function Game(){
           }
         }catch{}
         // Load real leaderboard from Supabase
-        supaFetch("leaderboard?league=eq.wnba&wins=eq.44&order=team_off.desc,team_def.desc&limit=10")
+        supaFetch("leaderboard?league=eq.wnba&wins=eq.44&order=team_off.desc&limit=10&select=*")
           .then(data=>{
             if(data&&data.length>0){
               setLeaderboard(data.map(e=>({
@@ -712,7 +715,23 @@ export default function Game(){
     setHomeUsed(true);setPickTwoOn(false);setPick1(null);setPick2(null);
     setReshuffling(true);setBoard([]);
     setTimeout(()=>{
-      setBoard(generateBoard(currentTeam,draftedNames,true));
+      // Force fresh board — use different random seed each call
+      const freshSeed=Date.now();
+      const pool=PLAYER_DB.filter(p=>p.team===currentTeam);
+      // Shuffle completely fresh
+      const freshShuffled=[...pool].sort(()=>Math.random()-0.5);
+      // Guarantee at least some different seasons from current board
+      const currentOnBoard=new Set(board.map(p=>p.season+"_"+p.name));
+      const different=freshShuffled.filter(p=>!currentOnBoard.has(p.season+"_"+p.name));
+      const same=freshShuffled.filter(p=>currentOnBoard.has(p.season+"_"+p.name));
+      // Mix: prefer different players/seasons first
+      const elite=different.filter(p=>p.off>=80||p.def>=80);
+      const eliteSame=same.filter(p=>p.off>=80||p.def>=80);
+      const rest=different.filter(p=>p.off<80&&p.def<80);
+      const allElite=[...elite,...eliteSame].slice(0,3);
+      const allRest=[...rest,...same.filter(p=>p.off<80&&p.def<80)].slice(0,7);
+      const newBoard=[...allElite,...allRest].slice(0,10);
+      setBoard(newBoard.length>=3?newBoard:generateBoard(currentTeam,draftedNames,true));
       setReshuffling(false);
     },600);
   }
@@ -786,10 +805,12 @@ export default function Game(){
           roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key}))};
         setLeaderboard(prev=>[entry,...prev.filter(e=>e.username!==name)].sort((a,b)=>(b.teamOff+b.teamDef)-(a.teamOff+a.teamDef)).slice(0,10));
         // Submit to Supabase
-        supaFetch("leaderboard",{method:"POST",body:JSON.stringify({
+        supaFetch("leaderboard",{method:"POST",
+          headers:{"Prefer":"resolution=merge-duplicates"},
+          body:JSON.stringify({
           username:name,wins:44,losses:0,team_off:res.teamOff,team_def:res.teamDef,
           roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key})),
-          league:"wnba"
+          league:"wnba",created_at:new Date().toISOString()
         })});
         setShowCelebration(true);
       }else{setPhase("result");}
@@ -1057,13 +1078,13 @@ export default function Game(){
 
           {/* Team stats */}
           {rosterSlots.length>0&&(()=>{
-            const avg5=(stat)=>(rosterSlots.reduce((sum,s)=>sum+(s.player?.[stat]||0),0)/Math.max(1,rosterSlots.filter(s=>s.player).length));
+            const tot5d=(stat)=>rosterSlots.reduce((sum,s)=>sum+(s.player?.[stat]||0),0);
             return(
               <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,padding:"12px",marginBottom:14}}>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr",textAlign:"center",gap:4}}>
                   {[["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].map(([lbl,key])=>(
                     <div key={lbl}>
-                      <div style={{fontSize:16,fontWeight:900,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{avg5(key).toFixed(1)}</div>
+                      <div style={{fontSize:16,fontWeight:900,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{tot5d(key).toFixed(1)}</div>
                       <div style={{fontSize:8,color:"#6b7280",fontFamily:"'Barlow',sans-serif",marginTop:2}}>{lbl}</div>
                     </div>
                   ))}
@@ -1153,7 +1174,7 @@ export default function Game(){
               const sr=el("div","background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:9px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;text-align:center");
               const fp3=rosterSlots.filter(s=>s.player);
               [["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].forEach(sk=>{
-                const tot=(fp3.reduce((sum,s)=>sum+(s.player[sk[1]]||0),0)).toFixed(1);
+                const tot=(fp3.reduce(function(sum,s){return sum+(s.player?s.player[sk[1]]||0:0);},0)).toFixed(1);
                 ap(sr,ap(el("div"),el("div","font-size:13px;font-weight:800;color:#f9fafb",tot),el("div","font-size:8px;color:#6b7280;font-family:Barlow,sans-serif;margin-top:1px",sk[0])));
               });
               // Roster
@@ -1189,7 +1210,15 @@ export default function Game(){
               border:"1px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px",fontSize:15,
               fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
               cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>↑ Share Result</button>
-            <button onClick={()=>setShowDaily(false)} style={{width:"100%",background:"#f59e42",color:"#07090f",
+            <button onClick={()=>{
+              setShowDaily(false);setMode(null);setPhase("spin");setRound(0);
+              setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
+              setDraftedNames(new Set());setUsedTeams(new Set());
+              setPick1(null);setPick2(null);setResult(null);setTierMsg("");
+              setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
+              setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
+              setBoostUsed(false);setPendingBoost(false);
+            }} style={{width:"100%",background:"#f59e42",color:"#07090f",
               border:"none",borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
               fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",cursor:"pointer",
               textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>Back to Home</button>
@@ -1439,7 +1468,8 @@ export default function Game(){
         <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:32}}>
           {/* Daily Challenge — top, time-sensitive */}
           <button onClick={()=>{
-            if(!username){setShowUsernamePrompt(true);setTimeout(()=>{setShowDaily(true);setMode("classic");},50);}
+            if(!username){setShowUsernamePrompt(true);setTimeout(()=>setShowDaily(true),50);}
+            else if(dailyComplete){setShowDaily(true);}
             else{setShowDaily(true);setMode("classic");}
           }} style={{background:"rgba(245,158,66,0.08)",color:"#f9fafb",
             border:"1px solid rgba(245,158,66,0.25)",borderRadius:14,padding:"16px 24px",
@@ -1625,7 +1655,7 @@ export default function Game(){
               statsRow.style.cssText="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;text-align:center";
               const filledPlayers=slots.filter(function(s){return s.player;});
               [["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].forEach(function(sk){
-                const avg=(filledPlayers.reduce(function(sum,s){return sum+(s.player[sk[1]]||0);},0)/Math.max(1,filledPlayers.length)).toFixed(1);
+                const avg=(filledPlayers.reduce(function(sum,s){return sum+(s.player[sk[1]]||0);},0)).toFixed(1);
                 const cell=document.createElement("div");
                 const vDiv=document.createElement("div");
                 vDiv.style.cssText="font-size:15px;font-weight:800;color:#f9fafb;font-family:Barlow Condensed,sans-serif";
@@ -1737,8 +1767,15 @@ export default function Game(){
             <div style={{display:"flex",gap:10}}>
               <button onClick={()=>{
                 const currentMode=mode;
-                reset(true);
-                setTimeout(()=>setMode(currentMode),50);
+                setMode(null);setPhase("spin");setRound(0);setCurrentTeam(null);
+                setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
+                setDraftedNames(new Set());setUsedTeams(new Set());
+                setPick1(null);setPick2(null);setResult(null);setTierMsg("");
+                setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
+                setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
+                setBoostUsed(false);setPendingBoost(false);setShowDaily(false);
+                setShowConfirmReset(false);setShowCelebration(false);
+                setMode(currentMode);
               }} style={{flex:2,background:"#f59e42",color:"#07090f",
                 border:"none",borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
                 fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",cursor:"pointer",
@@ -1747,8 +1784,14 @@ export default function Game(){
               </button>
               <button onClick={()=>{
                 const newMode=mode==="classic"?"hoopiq":"classic";
-                reset(true);
-                setTimeout(()=>setMode(newMode),50);
+                setPhase("spin");setRound(0);setCurrentTeam(null);
+                setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
+                setDraftedNames(new Set());setUsedTeams(new Set());
+                setPick1(null);setPick2(null);setResult(null);setTierMsg("");
+                setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
+                setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
+                setBoostUsed(false);setPendingBoost(false);
+                setMode(newMode);
               }} style={{flex:1,background:"rgba(255,255,255,0.06)",color:"#9ca3af",
                 border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,padding:"16px",fontSize:12,
                 fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.06em",
@@ -1769,14 +1812,31 @@ export default function Game(){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
           padding:"16px 0 12px",position:"sticky",top:0,background:"#07090f",
           zIndex:10,borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
-          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,letterSpacing:"0.02em",display:"flex",alignItems:"center",gap:8}}>
+          <div onClick={()=>{
+            if(filledCount>0){
+              if(window.confirm("Go back to Home? You will lose your current draft.")){reset(true);}
+            } else {reset(true);}
+          }} style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,letterSpacing:"0.02em",display:"flex",alignItems:"center",gap:8,cursor:"pointer",WebkitTapHighlightColor:"transparent"}}>
             <span>DRAFTED</span>
             <span style={{fontSize:12,color:"#f59e42",fontWeight:700}}>44-0</span>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <button onClick={()=>{
               const newMode=hoopIQ?"classic":"hoopiq";
-              reset(true);setTimeout(()=>setMode(newMode),50);
+              if(filledCount>0){
+                if(window.confirm("Switch to "+(newMode==="hoopiq"?"HoopIQ":"Classic")+"? You will lose your current draft.")){
+                  setPhase("spin");setRound(0);setCurrentTeam(null);
+                  setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
+                  setDraftedNames(new Set());setUsedTeams(new Set());
+                  setPick1(null);setPick2(null);setResult(null);setTierMsg("");
+                  setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
+                  setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
+                  setBoostUsed(false);setPendingBoost(false);
+                  setMode(newMode);
+                }
+              } else {
+                setMode(newMode);
+              }
             }} style={{background:hoopIQ?"rgba(167,139,250,0.13)":"rgba(249,158,66,0.12)",
               border:`1px solid ${hoopIQ?"#a78bfa33":"#f59e4233"}`,borderRadius:20,
               padding:"3px 10px",fontSize:10,color:hoopIQ?"#a78bfa":"#f59e42",letterSpacing:"0.08em",fontWeight:700,
