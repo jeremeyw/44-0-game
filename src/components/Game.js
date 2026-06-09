@@ -1,6 +1,24 @@
 'use client'
 import { useState, useEffect, useRef } from "react";
 
+// ── SUPABASE CLIENT ───────────────────────────────────────────────────────────
+const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPA_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
+async function supaFetch(path, opts={}) {
+  if(!SUPA_URL||!SUPA_KEY) return null;
+  try {
+    const r = await fetch(SUPA_URL+"/rest/v1/"+path, {
+      headers: { "apikey": SUPA_KEY, "Authorization": "Bearer "+SUPA_KEY,
+        "Content-Type": "application/json", "Prefer": "return=representation", ...opts.headers },
+      ...opts
+    });
+    if(!r.ok) return null;
+    const text = await r.text();
+    return text ? JSON.parse(text) : null;
+  } catch { return null; }
+}
+
 // ── PLAYER DATABASE (loaded from /players.json) ───────────────────────────────
 // PLAYER_DB is populated at runtime via fetch
 let PLAYER_DB = [];
@@ -161,6 +179,62 @@ const LEAGUES={
   nfl:{name:"NFL",emoji:"🏈",record:"17-0",games:17,active:false,color:"#22c55e"},
   mlb:{name:"MLB",emoji:"⚾",record:"162-0",games:162,active:false,color:"#3b82f6"},
 };
+
+// ── DAILY CHALLENGE LOGIC ─────────────────────────────────────────────────────
+function getDailyKey(){
+  const d=new Date();
+  return d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+}
+
+function seededRand(seed){
+  let s=seed;
+  return function(){s=Math.imul(48271,s)|0;return((s&0x7fffffff)/0x7fffffff);};
+}
+
+function getDailyBoards(){
+  // Find All-Timers (95+ rating) not used in last 5 days
+  const allTimers=PLAYER_DB.filter(p=>p.off>=95||p.def>=95);
+  const uniqueAllTimers=[...new Map(allTimers.map(p=>[p.name,p])).values()];
+  const key=getDailyKey();
+  const rand=seededRand(key);
+
+  // Shuffle All-Timers with seeded random
+  const shuffled=[...uniqueAllTimers].sort(()=>rand()-0.5);
+
+  // Pick the first All-Timer's team as anchor franchise
+  const anchor=shuffled[0];
+  const anchorTeam=anchor.team;
+
+  // Generate 5 teams seeded by date — anchor team first
+  const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))];
+  const otherTeams=allTeams.filter(t=>t!==anchorTeam);
+  const shuffledOthers=[...otherTeams].sort(()=>rand()-0.5);
+  return[anchorTeam,...shuffledOthers.slice(0,4)];
+}
+
+function calcDailyGrade(userWins,maxWins){
+  const pct=maxWins>0?userWins/maxWins:0;
+  if(pct>=0.99)return{grade:"A+",label:"Perfect Draft",color:"#f59e42"};
+  if(pct>=0.93)return{grade:"A",label:"Elite Draft",color:"#f59e42"};
+  if(pct>=0.85)return{grade:"B+",label:"Great Draft",color:"#4ade80"};
+  if(pct>=0.75)return{grade:"B",label:"Good Draft",color:"#4ade80"};
+  if(pct>=0.65)return{grade:"C+",label:"Solid Draft",color:"#60a5fa"};
+  if(pct>=0.55)return{grade:"C",label:"Average Draft",color:"#60a5fa"};
+  if(pct>=0.40)return{grade:"D",label:"Rough Draft",color:"#a78bfa"};
+  return{grade:"F",label:"Better luck tomorrow",color:"#f87171"};
+}
+
+function getCountdown(){
+  const now=new Date();
+  const tomorrow=new Date(now);
+  tomorrow.setDate(tomorrow.getDate()+1);
+  tomorrow.setHours(0,0,0,0);
+  const diff=tomorrow-now;
+  const h=Math.floor(diff/3600000);
+  const m=Math.floor((diff%3600000)/60000);
+  const s=Math.floor((diff%60000)/1000);
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
 
 function generateBoard(team,draftedNames=new Set(),hometown=false,size=10,minElite=3){
   const pool=PLAYER_DB.filter(p=>p.team===team);
@@ -494,6 +568,15 @@ export default function Game(){
   const [currentLeague,setCurrentLeague]=useState("wnba");
   const [showComingSoon,setShowComingSoon]=useState(null);
   const [showGameInfo,setShowGameInfo]=useState(false);
+  const [showDaily,setShowDaily]=useState(false);
+  const [dailyComplete,setDailyComplete]=useState(false);
+  const [dailyResult,setDailyResult]=useState(null);
+  const [dailySlots,setDailySlots]=useState(null);
+  const [dailyGrade,setDailyGrade]=useState(null);
+  const [dailyReveal,setDailyReveal]=useState(false);
+  const [dailyBestRoster,setDailyBestRoster]=useState(null);
+  const [dailyCountdown,setDailyCountdown]=useState("");
+  const [dailyMsg,setDailyMsg]=useState("");
 
   const [playersLoaded, setPlayersLoaded] = useState(false);
 
@@ -504,11 +587,44 @@ export default function Game(){
     // Load full player database
     fetch('/players.json')
       .then(r=>r.json())
-      .then(data=>{ PLAYER_DB=data; setPlayersLoaded(true); })
-      .catch(()=>setPlayersLoaded(true)); // fallback — game still works with empty DB
+      .then(data=>{
+        PLAYER_DB=data;
+        setPlayersLoaded(true);
+        // Check daily completion
+        const todayKey=String(getDailyKey());
+        try{
+          const stored=JSON.parse(localStorage.getItem("44o_daily")||"{}");
+          if(stored.key===todayKey&&stored.result){
+            setDailyComplete(true);
+            setDailyResult(stored.result);
+            setDailySlots(stored.slots||null);
+            setDailyGrade(stored.grade||null);
+            setDailyMsg(stored.msg||"");
+          }
+        }catch{}
+        // Load real leaderboard from Supabase
+        supaFetch("leaderboard?league=eq.wnba&wins=eq.44&order=team_off.desc,team_def.desc&limit=10")
+          .then(data=>{
+            if(data&&data.length>0){
+              setLeaderboard(data.map(e=>({
+                username:e.username, wins:e.wins, losses:e.losses,
+                teamOff:e.team_off, teamDef:e.team_def,
+                roster:e.roster||[]
+              })));
+            }
+          });
+      })
+      .catch(()=>setPlayersLoaded(true));
+    // Countdown timer
+    const iv=setInterval(()=>setDailyCountdown(getCountdown()),1000);
+    setDailyCountdown(getCountdown());
+    return()=>clearInterval(iv);
   },[]);
 
   const hoopIQ=mode==="hoopiq";
+  const isDailyMode=showDaily&&!dailyComplete;
+  const [boostUsed,setBoostUsed]=useState(false);
+  const [pendingBoost,setPendingBoost]=useState(false);
   const filledCount=slots.filter(s=>s.player).length;
   const canConfirm=pick1&&(!pickTwoOn||pick2);
   const tc=currentTeam?teamColor(currentTeam):{primary:"#f59e42",secondary:"#1f2937"};
@@ -516,7 +632,8 @@ export default function Game(){
   function doSpin(opts={}){
     const{exclude=null,hometown=false}=opts;
     setSpinning(true);setSpinLanded(false);setPick1(null);setPick2(null);setSelSlot(null);
-    const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
+    const dailyTeamsList=isDailyMode?getDailyBoards():null;
+    const allTeams=dailyTeamsList||[...new Set(PLAYER_DB.map(p=>p.team))].sort();
     // Load recently seen teams from localStorage
     let recentTeams=[];
     try{recentTeams=JSON.parse(localStorage.getItem("44o_recent")||"[]");}catch{}
@@ -587,18 +704,62 @@ export default function Game(){
     if(!pick1||(pickTwoOn&&!pick2))return;
     let newSlots=[...slots];
     const newDrafted=new Set([...draftedNames]);
-    picks.forEach(p=>{newSlots=smartAutoAssign(p,newSlots);newDrafted.add(playerBase(p.name));});
+    picks.forEach(p=>{
+      let player=p;
+      // Apply boost in daily mode
+      if(isDailyMode&&pendingBoost&&!boostUsed&&picks[0]===p){
+        const baseRating=(p.off+p.def)/2;
+        const boost=baseRating>=90?2:baseRating>=82?4:baseRating>=74?6:8;
+        player={...p,off:Math.min(99,p.off+boost),def:Math.min(99,p.def+boost),boosted:true};
+        setBoostUsed(true);setPendingBoost(false);
+      }
+      newSlots=smartAutoAssign(player,newSlots);newDrafted.add(playerBase(p.name));
+    });
     const newUsed=new Set([...usedTeams,currentTeam]);
     setSlots(newSlots);setDraftedNames(newDrafted);setUsedTeams(newUsed);
     setPick1(null);setPick2(null);setPickTwoOn(false);setSelSlot(null);
     if(newSlots.filter(s=>s.player).length>=5){
       const res=simulateSeason(newSlots);
+
+      // Daily challenge completion
+      if(isDailyMode){
+        const todayKey=String(getDailyKey());
+        const grade=calcDailyGrade(res.wins,44);
+        setDailyResult(res);
+        setDailySlots(newSlots);
+        setDailyGrade(grade);
+        setDailyComplete(true);
+        // Find best possible roster from daily boards
+        const dailyTeams=getDailyBoards();
+        const allDailyPlayers=PLAYER_DB.filter(p=>dailyTeams.includes(p.team));
+        const topOff=[...allDailyPlayers].sort((a,b)=>b.off-a.off).slice(0,2);
+        const topDef=[...allDailyPlayers].filter(p=>!topOff.find(x=>x.name===p.name)).sort((a,b)=>b.def-a.def).slice(0,2);
+        const topC=[...allDailyPlayers].filter(p=>!topOff.find(x=>x.name===p.name)&&!topDef.find(x=>x.name===p.name)&&p.pos==="C").sort((a,b)=>(b.off+b.def)-(a.off+a.def)).slice(0,1);
+        setDailyBestRoster([...topOff,...topDef,...topC]);
+        // Save to localStorage
+        try{localStorage.setItem("44o_daily",JSON.stringify({key:todayKey,result:res,slots:newSlots,grade,msg:res.tierMessage}));}catch{}
+        // Submit to Supabase daily leaderboard
+        supaFetch("leaderboard",{method:"POST",body:JSON.stringify({
+          username:username||"Anonymous",wins:res.wins,losses:res.losses,
+          team_off:res.teamOff,team_def:res.teamDef,
+          roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key})),
+          league:"wnba_daily",grade:grade.grade
+        })});
+        setPhase("result");return;
+      }
+
       setResult(res);setTierMsg(res?res.tierMessage:"");
       if(res&&res.wins===44){
         const name=username||"Anonymous";
         const entry={username:name,wins:44,losses:0,teamOff:res.teamOff,teamDef:res.teamDef,
           roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key}))};
         setLeaderboard(prev=>[entry,...prev.filter(e=>e.username!==name)].sort((a,b)=>(b.teamOff+b.teamDef)-(a.teamOff+a.teamDef)).slice(0,10));
+        // Submit to Supabase
+        supaFetch("leaderboard",{method:"POST",body:JSON.stringify({
+          username:name,wins:44,losses:0,team_off:res.teamOff,team_def:res.teamDef,
+          roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key})),
+          league:"wnba"
+        })});
         setShowCelebration(true);
       }else{setPhase("result");}
     }else{setRound(r=>r+1);setPhase("spin");setCurrentTeam(null);}
@@ -636,6 +797,7 @@ export default function Game(){
     setPick1(null);setPick2(null);setResult(null);setTierMsg("");
     setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
     setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
+    setBoostUsed(false);setPendingBoost(false);setShowDaily(false);
     setMenuOpen(false);setShowConfirmReset(false);setShowCelebration(false);
   }
 
@@ -814,6 +976,147 @@ export default function Game(){
       </div>
     </div>
   );
+
+  // ── DAILY CHALLENGE RESULT SCREEN ──────────────────────────────────────────
+  if(showDaily&&dailyComplete&&dailyResult){
+    const grade=dailyGrade||calcDailyGrade(dailyResult.wins,44);
+    const tier=getTier(dailyResult.wins);
+    const teamAbbrMap={"Las Vegas Aces":"LVA","New York Liberty":"NYL","Seattle Storm":"SEA","Minnesota Lynx":"MIN","Connecticut Sun":"CON","Indiana Fever":"IND","Phoenix Mercury":"PHX","Los Angeles Sparks":"LAL","Houston Comets":"HOU","Chicago Sky":"CHI","Washington Mystics":"WAS","Atlanta Dream":"ATL","Dallas Wings":"DAL","Golden State Valkyries":"GSV","Toronto Tempo":"TOR","Sacramento Monarchs":"SAC","Charlotte Sting":"CHA","Cleveland Rockers":"CLE","Miami Sol":"MIA","Portland Fire":"POR"};
+    const rosterSlots=dailySlots||[];
+    return(
+      <div style={wrap}>
+        {menuOpen&&<MenuOverlay/>}
+        <div style={{width:"100%",paddingTop:20,paddingBottom:100}}>
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}><HBurg/></div>
+
+          {/* Daily header */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+            <div>
+              <div style={{fontSize:9,color:"#f59e42",letterSpacing:"0.2em",fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif"}}>DRAFTED · DAILY</div>
+              <div style={{fontSize:10,color:"#4b5563",fontFamily:"'Barlow',sans-serif",marginTop:1}}>{new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.08em",fontFamily:"'Barlow',sans-serif"}}>NEXT DRAFT IN</div>
+              <div style={{fontSize:13,fontWeight:800,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{dailyCountdown}</div>
+            </div>
+          </div>
+
+          {/* Record + Grade */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+            <div style={{background:"rgba(74,222,128,0.06)",border:`1px solid ${tier.color}30`,borderRadius:12,padding:"14px",textAlign:"center"}}>
+              <div style={{fontSize:8,color:"#6b7280",letterSpacing:"0.1em",marginBottom:6,fontFamily:"'Barlow',sans-serif"}}>RECORD</div>
+              <div style={{fontSize:48,fontWeight:900,lineHeight:0.9,letterSpacing:"-0.02em",color:tier.color,fontFamily:"'Barlow Condensed',sans-serif"}}>{dailyResult.wins}-{dailyResult.losses}</div>
+              <div style={{fontSize:8,color:tier.color,marginTop:6,letterSpacing:"0.1em",fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif"}}>{tier.label}</div>
+            </div>
+            <div style={{background:"rgba(245,158,66,0.06)",border:"1px solid rgba(245,158,66,0.18)",borderRadius:12,padding:"14px",textAlign:"center"}}>
+              <div style={{fontSize:8,color:"#6b7280",letterSpacing:"0.1em",marginBottom:6,fontFamily:"'Barlow',sans-serif"}}>DRAFT GRADE</div>
+              <div style={{fontSize:48,fontWeight:900,lineHeight:0.9,color:grade.color,fontFamily:"'Barlow Condensed',sans-serif"}}>{grade.grade}</div>
+              <div style={{display:"flex",alignItems:"center",gap:4,marginTop:8}}>
+                <div style={{fontSize:7,color:"#4b5563",fontFamily:"'Barlow',sans-serif"}}>F</div>
+                <div style={{flex:1,height:3,background:"rgba(255,255,255,0.06)",borderRadius:2,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:grade.grade==="A+"?"100%":grade.grade==="A"?"92%":grade.grade==="B+"?"83%":grade.grade==="B"?"73%":grade.grade==="C+"?"63%":grade.grade==="C"?"53%":grade.grade==="D"?"38%":"15%",background:grade.color,borderRadius:2}}/>
+                </div>
+                <div style={{fontSize:7,color:"#4b5563",fontFamily:"'Barlow',sans-serif"}}>A+</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Team stats */}
+          {rosterSlots.length>0&&(()=>{
+            const avg5=(stat)=>(rosterSlots.reduce((sum,s)=>sum+(s.player?.[stat]||0),0)/Math.max(1,rosterSlots.filter(s=>s.player).length));
+            return(
+              <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,padding:"12px",marginBottom:14}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr",textAlign:"center",gap:4}}>
+                  {[["PPG","pts"],["RPG","reb"],["APG","ast"],["SPG","stl"],["BPG","blk"]].map(([lbl,key])=>(
+                    <div key={lbl}>
+                      <div style={{fontSize:16,fontWeight:900,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{avg5(key).toFixed(1)}</div>
+                      <div style={{fontSize:8,color:"#6b7280",fontFamily:"'Barlow',sans-serif",marginTop:2}}>{lbl}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Roster */}
+          <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.1em",marginBottom:8,fontFamily:"'Barlow',sans-serif"}}>YOUR PICKS</div>
+          <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:14}}>
+            {["PG","SG","SF","PF","C"].map(slotKey=>{
+              const s=rosterSlots.find(sl=>sl.key===slotKey);
+              if(!s||!s.player)return null;
+              const p=s.player;const c=posColor(p.pos);
+              const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
+              const abbr=teamAbbrMap[p.team]||p.team.slice(0,3).toUpperCase();
+              return(
+                <div key={slotKey} style={{display:"flex",alignItems:"center",gap:8,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:10,padding:"8px 10px"}}>
+                  <Avatar player={p} size={30}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}{s.boosted&&<span style={{fontSize:9,color:"#f59e42",marginLeft:5}}>⚡</span>}</div>
+                    <div style={{fontSize:9,color:"#6b7280",fontFamily:"'Barlow',sans-serif"}}><span style={{color:c,fontWeight:700}}>{slotKey}</span> · {abbr} · {p.season}</div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontSize:12,fontWeight:800,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{tot}</div>
+                    <div style={{fontSize:8,color:"#4b5563",fontFamily:"'Barlow',sans-serif"}}>TOTAL</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Reveal best team */}
+          {!dailyReveal?(
+            <button onClick={()=>setDailyReveal(true)} style={{width:"100%",background:"rgba(255,255,255,0.04)",
+              border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,padding:"11px",textAlign:"center",
+              marginBottom:14,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",
+              fontSize:12,fontWeight:700,color:"#6b7280",letterSpacing:"0.08em",
+              WebkitTapHighlightColor:"transparent"}}>
+              👁 REVEAL BEST POSSIBLE TEAM
+            </button>
+          ):(
+            <div style={{background:"rgba(245,158,66,0.05)",border:"1px solid rgba(245,158,66,0.15)",
+              borderRadius:12,padding:"14px",marginBottom:14}}>
+              <div style={{fontSize:9,color:"#f59e42",letterSpacing:"0.14em",fontWeight:700,marginBottom:10,fontFamily:"'Barlow Condensed',sans-serif"}}>BEST POSSIBLE TEAM TODAY</div>
+              {dailyBestRoster&&dailyBestRoster.map((p,i)=>p&&(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <div style={{width:24,height:24,borderRadius:"50%",background:"rgba(245,158,66,0.15)",
+                    border:"1px solid rgba(245,158,66,0.3)",display:"flex",alignItems:"center",
+                    justifyContent:"center",fontSize:8,fontWeight:800,color:"#f59e42",flexShrink:0,
+                    fontFamily:"'Barlow Condensed',sans-serif"}}>
+                    {p.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase()}
+                  </div>
+                  <div style={{flex:1,fontSize:12,color:"#e5e7eb",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:600}}>{p.name}</div>
+                  <div style={{fontSize:9,color:"#6b7280",fontFamily:"'Barlow',sans-serif"}}>{p.season}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Share button */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <button onClick={()=>{
+              const text=`Drafted Daily - ${new Date().toLocaleDateString("en-US",{month:"short",day:"numeric"})}\n${dailyResult.wins}-${dailyResult.losses} · Grade: ${grade.grade}\ndrafted.games`;
+              if(navigator.share){navigator.share({text,title:"Drafted Daily"}).catch(()=>{});}
+              else{navigator.clipboard?.writeText(text).catch(()=>{});}
+            }} style={{width:"100%",background:"rgba(255,255,255,0.06)",color:"#f9fafb",
+              border:"1px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px",fontSize:15,
+              fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
+              cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>↑ Share Result</button>
+            <button onClick={()=>setShowDaily(false)} style={{width:"100%",background:"#f59e42",color:"#07090f",
+              border:"none",borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
+              fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",cursor:"pointer",
+              textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>Back to Home</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DAILY CHALLENGE GAME FLOW ───────────────────────────────────────────────
+  if(showDaily&&!dailyComplete&&playersLoaded){
+    // Daily game uses same flow but with seeded boards, no lifelines, one boost
+    // We reuse the main game flow by setting mode="daily"
+    // This is handled in the main game render below via isDailyMode check
+  }
 
   // ── COMING SOON PAGE ────────────────────────────────────────────────────────
   if(showComingSoon){
@@ -1046,6 +1349,23 @@ export default function Game(){
           Build the greatest WNBA team of all time.<br/>Can you go undefeated?
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:32}}>
+          {/* Daily Challenge — top, time-sensitive */}
+          <button onClick={()=>{
+            if(!username){setShowUsernamePrompt(true);setTimeout(()=>{setShowDaily(true);setMode("classic");},50);}
+            else{setShowDaily(true);setMode("classic");}
+          }} style={{background:"rgba(245,158,66,0.08)",color:"#f9fafb",
+            border:"1px solid rgba(245,158,66,0.25)",borderRadius:14,padding:"16px 24px",
+            cursor:"pointer",display:"flex",flexDirection:"column",gap:4,textAlign:"left",
+            WebkitTapHighlightColor:"transparent",position:"relative"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,letterSpacing:"0.06em",textTransform:"uppercase",color:"#f59e42"}}>Daily Challenge</span>
+              {dailyComplete&&<span style={{fontSize:9,color:"#4ade80",background:"rgba(74,222,128,0.1)",border:"1px solid rgba(74,222,128,0.25)",borderRadius:4,padding:"2px 6px",letterSpacing:"0.06em",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700}}>DONE ✓</span>}
+            </div>
+            <span style={{fontSize:12,opacity:0.6}}>Everyone gets the same 5 boards · No lifelines · One boost</span>
+            <div style={{fontSize:10,color:"#6b7280",marginTop:2,fontFamily:"'Barlow',sans-serif"}}>Next draft in {dailyCountdown}</div>
+          </button>
+
+          {/* Classic + HoopIQ */}
           {[["Classic","Stats visible · Make informed picks","classic",true],
             ["HoopIQ","Stats hidden · Draft from memory","hoopiq",false]].map(([l,s,m,a])=>(
             <button key={m} onClick={()=>{if(!username){setShowUsernamePrompt(true);setTimeout(()=>setMode(m),50);}else setMode(m);}}
@@ -1057,6 +1377,14 @@ export default function Game(){
               <span style={{fontSize:12,opacity:0.6}}>{s}</span>
             </button>
           ))}
+
+          {/* Play with Friends — coming next update */}
+          <button style={{background:"rgba(255,255,255,0.02)",color:"#4b5563",
+            border:"1px solid rgba(255,255,255,0.06)",borderRadius:14,padding:"16px 24px",
+            cursor:"default",display:"flex",flexDirection:"column",gap:4,textAlign:"left",opacity:0.5}}>
+            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,letterSpacing:"0.06em",textTransform:"uppercase"}}>Play with Friends</span>
+            <span style={{fontSize:12}}>Multiplayer · Coming soon</span>
+          </button>
         </div>
         <div style={{background:"rgba(255,255,255,0.025)",borderRadius:14,padding:"18px 20px",
           textAlign:"left",border:"1px solid rgba(255,255,255,0.06)"}}>
@@ -1367,7 +1695,7 @@ export default function Game(){
         {phase==="spin"&&(
           <div style={{textAlign:"center",padding:"64px 0"}}>
             <div style={{fontSize:11,color:"#374151",letterSpacing:"0.14em",marginBottom:24,textTransform:"uppercase"}}>
-              Round {round+1} — Dealing your board
+              {isDailyMode?"Daily Challenge · ":""}Round {round+1} — Dealing your board
             </div>
             {spinning?(
               <div>
@@ -1406,14 +1734,32 @@ export default function Game(){
                 </div>
               </div>
             </div>
-            <div style={{display:"flex",gap:7,marginBottom:14}}>
+            {!isDailyMode&&<div style={{display:"flex",gap:7,marginBottom:14}}>
               <Lifeline emoji="🔄" name="Fresh Start" desc="New team" used={freshUsed} locked={pickTwoOn}
                 onClick={()=>{setFreshUsed(true);setPhase("spin");setCurrentTeam(null);setPickTwoOn(false);doSpin({exclude:currentTeam});}}/>
               <Lifeline emoji="🏠" name="Hometown" desc="Reshuffle" used={homeUsed} locked={pickTwoOn}
                 onClick={doHometown}/>
               <Lifeline emoji="2️⃣" name="Pick Two" desc="Draft 2" used={twoUsed} locked={filledCount>=4}
                 onClick={()=>{setTwoUsed(true);setPickTwoOn(true);setPick1(null);setPick2(null);}}/>
-            </div>
+            </div>}
+            {isDailyMode&&(
+              <div style={{display:"flex",gap:7,marginBottom:14}}>
+                <button onClick={()=>{if(!boostUsed)setPendingBoost(b=>!b);}} style={{
+                  flex:1,background:pendingBoost?"rgba(245,158,66,0.15)":boostUsed?"rgba(255,255,255,0.01)":"rgba(255,255,255,0.04)",
+                  border:`1px solid ${pendingBoost?"rgba(245,158,66,0.4)":boostUsed?"rgba(255,255,255,0.05)":"rgba(255,255,255,0.12)"}`,
+                  borderRadius:11,padding:"9px 4px",cursor:boostUsed?"default":"pointer",
+                  opacity:boostUsed?0.25:1,textAlign:"center",WebkitTapHighlightColor:"transparent"}}>
+                  <div style={{fontSize:17,marginBottom:3}}>{boostUsed?"✗":"⚡"}</div>
+                  <div style={{fontSize:10,fontWeight:700,color:pendingBoost?"#f59e42":boostUsed?"#374151":"#e5e7eb",letterSpacing:"0.04em",marginBottom:1}}>BOOST</div>
+                  <div style={{fontSize:9,color:"#4b5563",lineHeight:1.3}}>{boostUsed?"Used":pendingBoost?"Select player":"Apply to next pick"}</div>
+                </button>
+                <div style={{flex:4,background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:11,padding:"9px 10px",display:"flex",alignItems:"center"}}>
+                  <div style={{fontSize:11,color:"#6b7280",fontFamily:"'Barlow',sans-serif",lineHeight:1.4}}>
+                    {boostUsed?"Boost used this draft.":pendingBoost?"⚡ Tap a player to apply your boost":"No lifelines in Daily Challenge. One boost available — higher-rated players get a smaller boost."}
+                  </div>
+                </div>
+              </div>
+            )}
             <div style={{display:"flex",flexDirection:"column",gap:9,
               opacity:reshuffling?0:1,transform:reshuffling?"translateY(8px)":"translateY(0)",
               transition:"opacity 0.3s, transform 0.3s"}}>
