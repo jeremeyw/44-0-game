@@ -190,6 +190,14 @@ function seededRand(seed){
   let s=seed;
   return function(){s=Math.imul(48271,s)|0;return((s&0x7fffffff)/0x7fffffff);};
 }
+function fisherYates(arr,rand){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){
+    const j=Math.floor(rand()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
 
 function getDailyBoards(){
   if(!PLAYER_DB.length) return [];
@@ -198,12 +206,10 @@ function getDailyBoards(){
 
   // Step 1: Guarantee at least one All-Timer franchise in the daily
   const allTimerTeams=[...new Set(PLAYER_DB.filter(p=>p.off>=95||p.def>=95).map(p=>p.team))];
-  const shuffledAT=[...allTimerTeams].sort(()=>rand()-0.5);
+  const shuffledAT=fisherYates([...allTimerTeams].sort(),rand);
   const anchorTeam=shuffledAT[0];
-
-  // Step 2: Fill remaining 4 from all teams (seeded)
   const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
-  const others=allTeams.filter(t=>t!==anchorTeam).sort(()=>rand()-0.5);
+  const others=fisherYates(allTeams.filter(t=>t!==anchorTeam),rand);
   return[anchorTeam,...others.slice(0,4)];
 }
 
@@ -220,10 +226,8 @@ function getDailyBoardsFull(){
     const sorted=[...pool].sort((a,b)=>b.off+b.def-(a.off+a.def));
     const elite=sorted.filter(p=>p.off>=80||p.def>=80);
     const rest=sorted.filter(p=>p.off<80&&p.def<80);
-    const shuffleSeeded=(arr)=>[...arr].sort(()=>rand()-0.5);
-    // Pick 3 elite + 7 others, all unique globally
-    const elitePicks=shuffleSeeded(elite).slice(0,3);
-    const restPicks=shuffleSeeded(rest).slice(0,7);
+    const elitePicks=fisherYates(elite,rand).slice(0,3);
+    const restPicks=fisherYates(rest,rand).slice(0,7);
     const board=[...elitePicks,...restPicks].slice(0,10);
     // Register all picked players globally
     board.forEach(p=>globalSeen.add(playerBase(p.name)));
@@ -624,16 +628,16 @@ export default function Game(){
           }
         }catch{}
         // Load real leaderboard from Supabase
-        supaFetch("leaderboard?league=eq.wnba&wins=eq.44&order=team_off.desc&limit=10&select=*")
+        supaFetch("leaderboard?league=eq.wnba&wins=eq.44&order=team_off.desc&limit=10&select=username,wins,losses,team_off,team_def,roster")
           .then(data=>{
-            if(data&&data.length>0){
+            if(data&&Array.isArray(data)&&data.length>0){
               setLeaderboard(data.map(e=>({
-                username:e.username, wins:e.wins, losses:e.losses,
-                teamOff:e.team_off, teamDef:e.team_def,
-                roster:e.roster||[]
+                username:e.username||"Anonymous", wins:e.wins||44, losses:e.losses||0,
+                teamOff:e.team_off||0, teamDef:e.team_def||0,
+                roster:Array.isArray(e.roster)?e.roster:[]
               })));
             }
-          });
+          }).catch(()=>{});
       })
       .catch(()=>setPlayersLoaded(true));
     // Countdown timer
@@ -1542,7 +1546,7 @@ export default function Game(){
           <div style={{textAlign:"center",marginBottom:28}}>
             <div style={{fontSize:11,letterSpacing:"0.2em",color:"#6b7280",marginBottom:10}}>FINAL RECORD</div>
             <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:88,fontWeight:900,
-              lineHeight:0.9,letterSpacing:"-0.03em",color:tier.color}}>
+              lineHeight:0.9,letterSpacing:"-0.02em",color:tier.color}}>
               {result.wins}<span style={{color:"rgba(255,255,255,0.15)"}}>-</span>{result.losses}
             </div>
             <div style={{fontSize:13,letterSpacing:"0.18em",color:tier.color,marginTop:10,textTransform:"uppercase",fontWeight:700}}>{tier.label}</div>
@@ -1565,16 +1569,7 @@ export default function Game(){
                     </div>
                   ))}
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                  <div style={{background:"rgba(245,158,66,0.08)",border:"1px solid rgba(245,158,66,0.18)",borderRadius:9,padding:"9px",textAlign:"center"}}>
-                    <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.1em",marginBottom:3,fontFamily:"'Barlow',sans-serif"}}>TEAM OFF RTG</div>
-                    <div style={{fontSize:24,fontWeight:900,color:"#f59e42",fontFamily:"'Barlow Condensed',sans-serif"}}>{result.teamOff}</div>
-                  </div>
-                  <div style={{background:"rgba(96,165,250,0.08)",border:"1px solid rgba(96,165,250,0.18)",borderRadius:9,padding:"9px",textAlign:"center"}}>
-                    <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.1em",marginBottom:3,fontFamily:"'Barlow',sans-serif"}}>TEAM DEF RTG</div>
-                    <div style={{fontSize:24,fontWeight:900,color:"#60a5fa",fontFamily:"'Barlow Condensed',sans-serif"}}>{result.teamDef}</div>
-                  </div>
-                </div>
+
               </div>
             );
           })()}
@@ -1666,20 +1661,6 @@ export default function Game(){
                 cell.appendChild(vDiv);cell.appendChild(lDiv);statsRow.appendChild(cell);
               });
 
-              const rtgRow=document.createElement("div");
-              rtgRow.style.cssText="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px";
-              [["TEAM OFF RTG",result.teamOff,"#f59e42"],["TEAM DEF RTG",result.teamDef,"#60a5fa"]].forEach(function(item){
-                const box=document.createElement("div");
-                box.style.cssText="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 10px;text-align:center";
-                const bl=document.createElement("div");
-                bl.style.cssText="font-size:9px;color:#6b7280;letter-spacing:0.1em;margin-bottom:4px;font-family:Barlow,sans-serif";
-                bl.textContent=item[0];
-                const bv=document.createElement("div");
-                bv.style.cssText="font-size:28px;font-weight:900;color:"+item[2];
-                bv.textContent=item[1];
-                box.appendChild(bl);box.appendChild(bv);rtgRow.appendChild(box);
-              });
-
               // Roster label
               const rLabel=document.createElement("div");
               rLabel.style.cssText="font-size:10px;color:#6b7280;letter-spacing:0.1em;margin-bottom:10px;font-family:Barlow,sans-serif";
@@ -1735,7 +1716,7 @@ export default function Game(){
               domain.textContent="drafted.games";
               footer.appendChild(cta);footer.appendChild(domain);
 
-              card.appendChild(hdr);card.appendChild(statsRow);card.appendChild(rtgRow);card.appendChild(rLabel);
+              card.appendChild(hdr);card.appendChild(statsRow);card.appendChild(rLabel);
               card.appendChild(rosterDiv);card.appendChild(footer);
               document.body.appendChild(card);
 
