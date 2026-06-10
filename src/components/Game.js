@@ -729,8 +729,10 @@ export default function Game(){
           const dbPlayers=room.players||[];
           setMultiPlayers(dbPlayers);
           if(room.status==="playing"&&multiPhase==="lobby"){
-            setMultiBoards(generateMultiBoards(room.board_seed));
-            setMultiPhase("playing");setMode(multiMode);
+            const boards2=generateMultiBoards(room.board_seed);
+            setMultiBoards(boards2);
+            setMultiPhase("playing");
+            setMode(room.game_mode||multiMode);
           }
           if((room.status==="results"||(room.players||[]).every(p=>p.result))&&multiPhase==="waiting"){
             setMultiResults(room.players||[]);
@@ -766,35 +768,25 @@ export default function Game(){
 
   function doSpin(opts={}){
     const{exclude=null,hometown=false}=opts;
+    // Guard: multiplayer needs boards to be loaded first
+    if(showMultiplayer&&!multiBoards){
+      console.warn("[Multi] Boards not ready yet, retrying spin...");
+      setTimeout(()=>doSpin(opts),500);
+      return;
+    }
     setSpinning(true);setSpinLanded(false);setPick1(null);setPick2(null);setSelSlot(null);
     // Daily mode uses pre-seeded board list
     const dailyBoardsFull=isDailyMode?getDailyBoardsFull():null;
     const dailyTeamsList=dailyBoardsFull?dailyBoardsFull.map(b=>b.team):null;
-    const multiTeamsList=showMultiplayer&&multiBoards?multiBoards.map(b=>b.team):null;
-    // For multiplayer/daily: use exact board order, skip complex filtering
-    if((isDailyMode&&dailyTeamsList)||(showMultiplayer&&multiTeamsList)){
-      const orderedTeams=dailyTeamsList||multiTeamsList;
-      const nextTeam=orderedTeams[round];
-      if(!nextTeam){setSpinning(false);return;}
-      // Animate spin then lock to correct team
-      let ticks2=0;
-      const iv2=setInterval(()=>{
-        ticks2++;
-        setSpinLabel(orderedTeams[Math.floor(Math.random()*orderedTeams.length)]);
-        if(ticks2>=16){
-          clearInterval(iv2);
-          setSpinLabel(nextTeam);setSpinLanded(true);
-          setTimeout(()=>{
-            setCurrentTeam(nextTeam);
-            const boardsFull=isDailyMode?dailyBoardsFull:multiBoards;
-            const boardEntry=boardsFull?boardsFull.find(b=>b.team===nextTeam):null;
-            const filtered=boardEntry?boardEntry.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
-            setBoard(filtered.length?filtered:generateBoard(nextTeam,draftedNames,false));
-            setSpinning(false);setPhase("draft");
-          },600);
-        }
-      },80);
-      return;
+    // Multiplayer: each player gets same 5 franchises in their own random order
+    // (seeded by room code + username for variety, but same player pools per franchise)
+    let multiTeamsList=null;
+    if(showMultiplayer&&multiBoards&&multiBoards.length>0){
+      // Shuffle the franchise order per player using username as extra seed
+      const userSeed=Array.from(username||"anon").reduce((a,c)=>a+c.charCodeAt(0),0);
+      const roomSeed=Array.from(multiRoom||"").reduce((a,c)=>a+c.charCodeAt(0),0);
+      const playerRand=seededRand((roomSeed*37+userSeed*13)&0x7fffffff);
+      multiTeamsList=fisherYates(multiBoards.map(b=>b.team),playerRand);
     }
     const allTeams=dailyTeamsList||multiTeamsList||[...new Set(PLAYER_DB.map(p=>p.team))].sort();
     // Load recently seen teams from localStorage
@@ -843,7 +835,7 @@ export default function Game(){
             const filteredBoard=dailyBoard?dailyBoard.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
             setBoard(filteredBoard.length?filteredBoard:generateBoard(chosen,draftedNames,false));
           } else if(showMultiplayer&&multiBoards&&multiBoards.length>0){
-            const mBoard=multiBoards.find(b=>b.team===chosen)||multiBoards[round]||null;
+            const mBoard=multiBoards.find(b=>b.team===chosen)||null;
             const filteredBoard=mBoard?mBoard.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
             setBoard(filteredBoard.length?filteredBoard:generateBoard(chosen,draftedNames,false));
           } else {
@@ -1571,6 +1563,12 @@ export default function Game(){
 
             {multiPlayers[0]?.username===(username||"Anonymous")&&multiPlayers.filter(p=>p.ready).length>=2&&(
               <button onClick={async()=>{
+                // Generate and store boards before starting
+                const freshR=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=board_seed");
+                const seed=(freshR&&freshR[0]&&freshR[0].board_seed)||Date.now();
+                const boards=generateMultiBoards(seed);
+                setMultiBoards(boards);
+                setMode(multiMode);
                 await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({status:"playing",players:multiPlayers})});
               }} style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
                 borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
