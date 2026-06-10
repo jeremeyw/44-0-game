@@ -691,11 +691,7 @@ export default function Game(){
     return()=>clearInterval(iv);
   },[]);
 
-  const hoopIQ=mode==="hoopiq";
-  const isDailyMode=showDaily&&!dailyComplete;
-  const [boostUsed,setBoostUsed]=useState(false);
-  const [pendingBoost,setPendingBoost]=useState(false);
-  // Multiplayer states
+  // Multiplayer polling — only active when in a room
   const [showMultiplayer,setShowMultiplayer]=useState(false);
   const [multiRoom,setMultiRoom]=useState(null);
   const [multiPlayers,setMultiPlayers]=useState([]);
@@ -705,6 +701,36 @@ export default function Game(){
   const [roomCodeInput,setRoomCodeInput]=useState("");
   const [multiBoards,setMultiBoards]=useState(null);
   const [multiMode,setMultiMode]=useState("classic");
+
+  const multiPollRef=useRef(null);
+  useEffect(()=>{
+    if(multiPollRef.current)clearInterval(multiPollRef.current);
+    if(!showMultiplayer||!multiRoom||multiPhase==="join"||multiPhase==="results")return;
+    multiPollRef.current=setInterval(async()=>{
+      try{
+        const data=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=*");
+        if(data&&Array.isArray(data)&&data[0]){
+          const room=data[0];
+          setMultiPlayers(room.players||[]);
+          if(room.status==="playing"&&multiPhase==="lobby"){
+            setMultiBoards(generateMultiBoards(room.board_seed));
+            setMultiPhase("playing");setMode(multiMode);
+          }
+          if(room.status==="results"&&multiPhase==="waiting"){
+            setMultiResults(room.players||[]);
+            setMultiPhase("results");
+          }
+        }
+      }catch(e){}
+    },2000);
+    return()=>{if(multiPollRef.current)clearInterval(multiPollRef.current);};
+  },[showMultiplayer,multiRoom,multiPhase]);
+
+  const hoopIQ=mode==="hoopiq";
+  const isDailyMode=showDaily&&!dailyComplete;
+  const [boostUsed,setBoostUsed]=useState(false);
+  const [pendingBoost,setPendingBoost]=useState(false);
+  // Multiplayer states
   const filledCount=slots.filter(s=>s.player).length;
   const canConfirm=pick1&&(!pickTwoOn||pick2);
   const tc=currentTeam?teamColor(currentTeam):{primary:"#f59e42",secondary:"#1f2937"};
@@ -1326,26 +1352,7 @@ export default function Game(){
   }
 
   // ── MULTIPLAYER SCREENS ──────────────────────────────────────────────────────
-  // Multiplayer polling
-  useEffect(()=>{
-    if(!showMultiplayer||!multiRoom||multiPhase==="join")return;
-    const poll=setInterval(async()=>{
-      const data=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=*");
-      if(data&&data[0]){
-        const room=data[0];
-        setMultiPlayers(room.players||[]);
-        if(room.status==="playing"&&multiPhase==="lobby"){
-          setMultiBoards(generateMultiBoards(room.board_seed));
-          setMultiPhase("playing");setMode(multiMode);
-        }
-        if(room.status==="results"&&multiPhase==="waiting"){
-          setMultiResults(room.players||[]);
-          setMultiPhase("results");
-        }
-      }
-    },2000);
-    return()=>clearInterval(poll);
-  },[showMultiplayer,multiRoom,multiPhase]);
+
 
   if(showMultiplayer){
 
@@ -1539,14 +1546,16 @@ export default function Game(){
             <div style={{fontSize:12,color:"#6b7280"}}>Room {multiRoom}</div>
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {[...multiResults].filter(p=>p.result).sort((a,b)=>{
-              const aw=a.result?.wins||0,bw=b.result?.wins||0;
+            {[...multiResults].filter(function(p){return p&&p.result;}).sort(function(a,b){
+              var aw=(a.result&&a.result.wins)||0,bw=(b.result&&b.result.wins)||0;
               if(bw!==aw)return bw-aw;
-              return((b.result?.teamOff||0)+(b.result?.teamDef||0))-((a.result?.teamOff||0)+(a.result?.teamDef||0));
+              var aTotal=((a.result&&a.result.teamOff)||0)+((a.result&&a.result.teamDef)||0);
+              var bTotal=((b.result&&b.result.teamOff)||0)+((b.result&&b.result.teamDef)||0);
+              return bTotal-aTotal;
             }).map((player,idx)=>{
               const medal=idx===0?"🥇":idx===1?"🥈":idx===2?"🥉":null;
-              const r=player.result;
-              const tier=getTier(r?.wins||0);
+              const r=player.result||{};
+              const tier=getTier(r.wins||0);
               return(
                 <div key={idx} style={{background:idx===0?"rgba(245,158,66,0.06)":"rgba(255,255,255,0.03)",
                   border:`1px solid ${idx===0?"rgba(245,158,66,0.2)":"rgba(255,255,255,0.07)"}`,
@@ -1561,15 +1570,15 @@ export default function Game(){
                       </div>
                     </div>
                     <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:32,fontWeight:900,color:tier.color}}>
-                      {r?.wins||0}-{r?.losses||0}
+                      {r.wins||0}-{r.losses||0}
                     </div>
                   </div>
                   {/* Roster preview */}
-                  {r?.roster&&(
+                  {r.roster&&(
                     <div style={{display:"flex",gap:6}}>
                       {r.roster.map((rp,ri)=>(
                         <div key={ri} style={{flex:1,textAlign:"center"}}>
-                          <div style={{fontSize:8,color:"#6b7280",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{rp.name?.split(" ").pop()}</div>
+                          <div style={{fontSize:8,color:"#6b7280",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{(rp.name||"").split(" ").pop()}</div>
                           <div style={{fontSize:8,color:"#4b5563"}}>'{String(rp.season).slice(2)}</div>
                         </div>
                       ))}
