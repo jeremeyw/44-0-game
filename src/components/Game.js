@@ -1394,13 +1394,18 @@ export default function Game(){
           <button onClick={async()=>{
             const code=generateRoomCode();
             const seed=Math.floor(Math.random()*999999)+1;
-            await supaFetch("rooms",{method:"POST",body:JSON.stringify({
+            const created=await supaFetch("rooms",{method:"POST",body:JSON.stringify({
               room_code:code,host_username:username||"Anonymous",board_seed:seed,
               game_mode:multiMode,status:"lobby",
               players:[{username:username||"Anonymous",ready:false,result:null}]
             })});
-            setMultiRoom(code);setMultiPhase("lobby");
-            setMultiPlayers([{username:username||"Anonymous",ready:false,result:null}]);
+            console.log("[Multiplayer] Room created:", created);
+            if(created&&created[0]){
+              setMultiRoom(code);setMultiPhase("lobby");
+              setMultiPlayers([{username:username||"Anonymous",ready:false,result:null}]);
+            } else {
+              alert("Failed to create room. Check console for details.");
+            }
           }} style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
             borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
             fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
@@ -1423,7 +1428,7 @@ export default function Game(){
             if(data&&data[0]){
               const room=data[0];
               const newPlayers=[...(room.players||[]),{username:username||"Anonymous",ready:false,result:null}];
-              await supaFetch("rooms?room_code=eq."+roomCodeInput,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
+              await supaFetch("rooms?room_code=eq."+roomCodeInput,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify({players:newPlayers})});
               setMultiRoom(roomCodeInput);setMultiPlayers(newPlayers);
               setMultiMode(room.game_mode||"classic");
               setMultiPhase(room.status==="playing"?"spectator":"lobby");
@@ -1496,7 +1501,7 @@ export default function Game(){
                 p.username===(username||"Anonymous")?{...p,ready:!p.ready}:p
               );
               setMultiPlayers(newPlayers);setMultiReady(!multiReady);
-              await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
+              await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify({players:newPlayers})});
             }} style={{width:"100%",background:multiReady?"rgba(74,222,128,0.15)":"rgba(255,255,255,0.06)",
               color:multiReady?"#4ade80":"#f9fafb",
               border:`1px solid ${multiReady?"rgba(74,222,128,0.3)":"rgba(255,255,255,0.15)"}`,
