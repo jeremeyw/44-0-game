@@ -771,6 +771,31 @@ export default function Game(){
     const dailyBoardsFull=isDailyMode?getDailyBoardsFull():null;
     const dailyTeamsList=dailyBoardsFull?dailyBoardsFull.map(b=>b.team):null;
     const multiTeamsList=showMultiplayer&&multiBoards?multiBoards.map(b=>b.team):null;
+    // For multiplayer/daily: use exact board order, skip complex filtering
+    if((isDailyMode&&dailyTeamsList)||(showMultiplayer&&multiTeamsList)){
+      const orderedTeams=dailyTeamsList||multiTeamsList;
+      const nextTeam=orderedTeams[round];
+      if(!nextTeam){setSpinning(false);return;}
+      // Animate spin then lock to correct team
+      let ticks2=0;
+      const iv2=setInterval(()=>{
+        ticks2++;
+        setSpinLabel(orderedTeams[Math.floor(Math.random()*orderedTeams.length)]);
+        if(ticks2>=16){
+          clearInterval(iv2);
+          setSpinLabel(nextTeam);setSpinLanded(true);
+          setTimeout(()=>{
+            setCurrentTeam(nextTeam);
+            const boardsFull=isDailyMode?dailyBoardsFull:multiBoards;
+            const boardEntry=boardsFull?boardsFull.find(b=>b.team===nextTeam):null;
+            const filtered=boardEntry?boardEntry.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
+            setBoard(filtered.length?filtered:generateBoard(nextTeam,draftedNames,false));
+            setSpinning(false);setPhase("draft");
+          },600);
+        }
+      },80);
+      return;
+    }
     const allTeams=dailyTeamsList||multiTeamsList||[...new Set(PLAYER_DB.map(p=>p.team))].sort();
     // Load recently seen teams from localStorage
     let recentTeams=[];
@@ -864,7 +889,7 @@ export default function Game(){
     }else{setPick1(prev=>prev?.id===p.id?null:p);}
   }
 
-  function confirmPick(){
+  async function confirmPick(){
     const picks=pickTwoOn?[pick1,pick2].filter(Boolean):[pick1].filter(Boolean);
     if(!pick1||(pickTwoOn&&!pick2))return;
     let newSlots=[...slots];
