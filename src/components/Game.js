@@ -1279,8 +1279,7 @@ export default function Game(){
                 const abbr=tAbbr[p.team]||p.team.slice(0,3).toUpperCase();
                 const row=ap(el("div","display:flex;align-items:center;gap:7px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:9px;padding:7px 9px;margin-bottom:4px"),
                   el("div","width:26px;height:26px;border-radius:50%;background:"+c+"22;border:1px solid "+c+"55;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:"+c+";flex-shrink:0",ini),
-                  ap(el("div","flex:1;min-width:0"),el("div","font-size:12px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",p.name+(s.boosted?" ⚡":"")),el("div","font-size:8px;color:#6b7280;font-family:Barlow,sans-serif",sk+" · "+abbr+" · "+p.season)),
-);
+                  ap(el("div","flex:1;min-width:0"),el("div","font-size:12px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",p.name+(s.boosted?" ⚡":"")),el("div","font-size:8px;color:#6b7280;font-family:Barlow,sans-serif",sk+" · "+abbr+" · "+p.season)));
                 rd.appendChild(row);
               });
               // CTA
