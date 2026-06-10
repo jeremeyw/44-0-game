@@ -6,17 +6,30 @@ const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPA_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
 async function supaFetch(path, opts={}) {
-  if(!SUPA_URL||!SUPA_KEY) return null;
+  if(!SUPA_URL||!SUPA_KEY){
+    console.error("[Supabase] Missing URL or KEY", {url:SUPA_URL?'OK':'MISSING', key:SUPA_KEY?'OK':'MISSING'});
+    return null;
+  }
   try {
-    const r = await fetch(SUPA_URL+"/rest/v1/"+path, {
+    const url=SUPA_URL+"/rest/v1/"+path;
+    console.log("[Supabase]", opts.method||"GET", url);
+    const r = await fetch(url, {
       headers: { "apikey": SUPA_KEY, "Authorization": "Bearer "+SUPA_KEY,
         "Content-Type": "application/json", "Prefer": "return=representation", ...opts.headers },
       ...opts
     });
-    if(!r.ok) return null;
+    console.log("[Supabase] response status:", r.status);
+    if(!r.ok){
+      const errText=await r.text();
+      console.error("[Supabase] error:", errText);
+      return null;
+    }
     const text = await r.text();
     return text ? JSON.parse(text) : null;
-  } catch { return null; }
+  } catch(e) {
+    console.error("[Supabase] fetch error:", e);
+    return null;
+  }
 }
 
 // ── PLAYER DATABASE (loaded from /players.json) ───────────────────────────────
