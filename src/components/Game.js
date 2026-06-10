@@ -226,10 +226,55 @@ function getDailyBoardsFull(){
     const sorted=[...pool].sort((a,b)=>b.off+b.def-(a.off+a.def));
     const elite=sorted.filter(p=>p.off>=80||p.def>=80);
     const rest=sorted.filter(p=>p.off<80&&p.def<80);
-    const elitePicks=fisherYates(elite,rand).slice(0,3);
-    const restPicks=fisherYates(rest,rand).slice(0,7);
-    const board=[...elitePicks,...restPicks].slice(0,10);
+    // Deduplicate by player name within this board
+    const boardNameSeen=new Set();
+    const eliteDeduped=fisherYates(elite,rand).filter(p=>{
+      const b=playerBase(p.name);if(boardNameSeen.has(b))return false;boardNameSeen.add(b);return true;
+    }).slice(0,3);
+    const restDeduped=fisherYates(rest,rand).filter(p=>{
+      const b=playerBase(p.name);if(boardNameSeen.has(b))return false;boardNameSeen.add(b);return true;
+    }).slice(0,7);
+    const board=[...eliteDeduped,...restDeduped].slice(0,10);
     // Register all picked players globally
+    board.forEach(p=>globalSeen.add(playerBase(p.name)));
+    boards.push({team,board});
+  });
+  return boards;
+}
+
+// ── MULTIPLAYER HELPERS ────────────────────────────────────────────────────────
+function generateRoomCode(){
+  const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code="";
+  for(let i=0;i<4;i++)code+=chars[Math.floor(Math.random()*chars.length)];
+  return code;
+}
+
+function generateMultiBoards(seed){
+  if(!PLAYER_DB.length)return[];
+  const rand=seededRand(seed);
+  const allTeams=[...new Set(PLAYER_DB.map(p=>p.team))].sort();
+  const teams=fisherYates(allTeams,rand).slice(0,5);
+  const boards=[];
+  const globalSeen=new Set();
+  teams.forEach((team,ti)=>{
+    const r2=seededRand(seed*31+ti*7+13);
+    const pool=PLAYER_DB.filter(p=>p.team===team&&!globalSeen.has(playerBase(p.name)));
+    const sorted=[...pool].sort((a,b)=>{
+      const c=(b.off+b.def)-(a.off+a.def);
+      if(c!==0)return c;
+      return(a.name+a.season).localeCompare(b.name+b.season);
+    });
+    const elite=sorted.filter(p=>p.off>=80||p.def>=80);
+    const rest=sorted.filter(p=>p.off<80&&p.def<80);
+    const boardNameSeen=new Set();
+    const eliteDeduped=fisherYates(elite,r2).filter(p=>{
+      const b=playerBase(p.name);if(boardNameSeen.has(b))return false;boardNameSeen.add(b);return true;
+    }).slice(0,3);
+    const restDeduped=fisherYates(rest,r2).filter(p=>{
+      const b=playerBase(p.name);if(boardNameSeen.has(b))return false;boardNameSeen.add(b);return true;
+    }).slice(0,7);
+    const board=[...eliteDeduped,...restDeduped].slice(0,10);
     board.forEach(p=>globalSeen.add(playerBase(p.name)));
     boards.push({team,board});
   });
@@ -628,7 +673,7 @@ export default function Game(){
           }
         }catch{}
         // Load real leaderboard from Supabase
-        supaFetch("leaderboard?league=eq.wnba&wins=eq.44&order=team_off.desc&limit=10&select=username,wins,losses,team_off,team_def,roster")
+        supaFetch("leaderboard?league=eq.wnba&order=wins.desc,team_off.desc&limit=10&select=username,wins,losses,team_off,team_def,roster")
           .then(data=>{
             if(data&&Array.isArray(data)&&data.length>0){
               setLeaderboard(data.map(e=>({
@@ -650,6 +695,16 @@ export default function Game(){
   const isDailyMode=showDaily&&!dailyComplete;
   const [boostUsed,setBoostUsed]=useState(false);
   const [pendingBoost,setPendingBoost]=useState(false);
+  // Multiplayer states
+  const [showMultiplayer,setShowMultiplayer]=useState(false);
+  const [multiRoom,setMultiRoom]=useState(null);
+  const [multiPlayers,setMultiPlayers]=useState([]);
+  const [multiReady,setMultiReady]=useState(false);
+  const [multiPhase,setMultiPhase]=useState("join"); // join | lobby | playing | waiting | results
+  const [multiResults,setMultiResults]=useState([]);
+  const [roomCodeInput,setRoomCodeInput]=useState("");
+  const [multiBoards,setMultiBoards]=useState(null);
+  const [multiMode,setMultiMode]=useState("classic");
   const filledCount=slots.filter(s=>s.player).length;
   const canConfirm=pick1&&(!pickTwoOn||pick2);
   const tc=currentTeam?teamColor(currentTeam):{primary:"#f59e42",secondary:"#1f2937"};
@@ -660,7 +715,8 @@ export default function Game(){
     // Daily mode uses pre-seeded board list
     const dailyBoardsFull=isDailyMode?getDailyBoardsFull():null;
     const dailyTeamsList=dailyBoardsFull?dailyBoardsFull.map(b=>b.team):null;
-    const allTeams=dailyTeamsList||[...new Set(PLAYER_DB.map(p=>p.team))].sort();
+    const multiTeamsList=showMultiplayer&&multiBoards?multiBoards.map(b=>b.team):null;
+    const allTeams=dailyTeamsList||multiTeamsList||[...new Set(PLAYER_DB.map(p=>p.team))].sort();
     // Load recently seen teams from localStorage
     let recentTeams=[];
     try{recentTeams=JSON.parse(localStorage.getItem("44o_recent")||"[]");}catch{}
@@ -701,10 +757,14 @@ export default function Game(){
         setSpinLabel(chosen);setSpinLanded(true);
         setTimeout(()=>{
           setCurrentTeam(chosen);
-          // Daily mode: use pre-seeded deterministic board
+          // Daily mode or multiplayer: use pre-seeded deterministic board
           if(isDailyMode&&dailyBoardsFull){
             const dailyBoard=dailyBoardsFull.find(b=>b.team===chosen);
             const filteredBoard=dailyBoard?dailyBoard.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
+            setBoard(filteredBoard.length?filteredBoard:generateBoard(chosen,draftedNames,false));
+          } else if(showMultiplayer&&multiBoards){
+            const mBoard=multiBoards.find(b=>b.team===chosen);
+            const filteredBoard=mBoard?mBoard.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
             setBoard(filteredBoard.length?filteredBoard:generateBoard(chosen,draftedNames,false));
           } else {
             setBoard(generateBoard(chosen,draftedNames,hometown));
@@ -779,18 +839,16 @@ export default function Game(){
         setDailySlots(newSlots);
         setDailyGrade(grade);
         setDailyComplete(true);
-        // Best possible team — only from players that appeared on daily boards
-        const fullBoards=getDailyBoardsFull();
-        const boardPlayers=fullBoards.flatMap(b=>b.board);
-        // Find best 5 unique players by combined rating
-        const seen=new Set();
-        const uniqueBoardPlayers=boardPlayers.filter(p=>{
-          const k=playerBase(p.name);
-          if(seen.has(k))return false;seen.add(k);return true;
-        }).sort((a,b)=>(b.off+b.def)-(a.off+a.def));
-        setDailyBestRoster(uniqueBoardPlayers.slice(0,5));
+        // Best possible team — one player per board (5 boards = 5 picks)
+        const fullBoards2=getDailyBoardsFull();
+        // For each board, find best player (by combined off+def)
+        const bestPerBoard=fullBoards2.map(b=>{
+          const sorted=[...b.board].sort((a,c)=>(c.off+c.def)-(a.off+a.def));
+          return sorted[0]||null;
+        }).filter(Boolean);
+        setDailyBestRoster(bestPerBoard);
         // Save to localStorage
-        const saveBest=getDailyBoardsFull().flatMap(b=>b.board).filter((p,i,arr)=>arr.findIndex(x=>playerBase(x.name)===playerBase(p.name))===i).sort((a,b)=>(b.off+b.def)-(a.off+a.def)).slice(0,5);
+        const saveBest=getDailyBoardsFull().map(b=>[...b.board].sort((a,c)=>(c.off+c.def)-(a.off+a.def))[0]).filter(Boolean);
         try{localStorage.setItem("44o_daily",JSON.stringify({key:todayKey,result:res,slots:newSlots,grade,msg:res.tierMessage,bestRoster:saveBest}));}catch{}
         // Submit to Supabase daily leaderboard
         supaFetch("leaderboard",{method:"POST",body:JSON.stringify({
@@ -803,19 +861,41 @@ export default function Game(){
       }
 
       setResult(res);setTierMsg(res?res.tierMessage:"");
-      if(res&&res.wins===44){
-        const name=username||"Anonymous";
-        const entry={username:name,wins:44,losses:0,teamOff:res.teamOff,teamDef:res.teamDef,
+      // If multiplayer, submit result to room
+      if(showMultiplayer&&multiRoom){
+        const name2=username||"Anonymous";
+        const myResult={wins:res.wins,losses:res.losses,teamOff:res.teamOff,teamDef:res.teamDef,
           roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key}))};
-        setLeaderboard(prev=>[entry,...prev.filter(e=>e.username!==name)].sort((a,b)=>(b.teamOff+b.teamDef)-(a.teamOff+a.teamDef)).slice(0,10));
-        // Submit to Supabase
-        supaFetch("leaderboard",{method:"POST",
-          headers:{"Prefer":"resolution=merge-duplicates"},
-          body:JSON.stringify({
-          username:name,wins:44,losses:0,team_off:res.teamOff,team_def:res.teamDef,
-          roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key})),
-          league:"wnba",created_at:new Date().toISOString()
-        })});
+        supaFetch("rooms?room_code=eq."+multiRoom+"&select=players").then(data=>{
+          if(data&&data[0]){
+            const updatedPlayers=(data[0].players||[]).map(p=>
+              p.username===name2?{...p,result:myResult}:p
+            );
+            const allDone=updatedPlayers.every(p=>p.result);
+            supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({
+              players:updatedPlayers,status:allDone?"results":"playing"
+            })});
+            setMultiPlayers(updatedPlayers);
+          }
+        });
+        setMultiPhase("waiting");setPhase("result");
+        setResult(res);setTierMsg(res?res.tierMessage:"");
+        return;
+      }
+      // Submit every result to Supabase leaderboard
+      const name=username||"Anonymous";
+      const rosterData=newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key}));
+      supaFetch("leaderboard",{method:"POST",body:JSON.stringify({
+        username:name,wins:res.wins,losses:res.losses,team_off:res.teamOff,team_def:res.teamDef,
+        roster:rosterData,league:"wnba",created_at:new Date().toISOString()
+      })});
+      // Update local leaderboard
+      const entry={username:name,wins:res.wins,losses:res.losses,teamOff:res.teamOff,teamDef:res.teamDef,roster:rosterData};
+      setLeaderboard(prev=>{
+        const updated=[entry,...prev.filter(e=>e.username!==name)];
+        return updated.sort((a,b)=>b.wins!==a.wins?b.wins-a.wins:(b.teamOff+b.teamDef)-(a.teamOff+a.teamDef)).slice(0,10);
+      });
+      if(res&&res.wins===44){
         setShowCelebration(true);
       }else{setPhase("result");}
     }else{setRound(r=>r+1);setPhase("spin");setCurrentTeam(null);}
@@ -854,6 +934,9 @@ export default function Game(){
     setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
     setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
     setBoostUsed(false);setPendingBoost(false);setShowDaily(false);
+    setShowMultiplayer(false);setMultiRoom(null);setMultiPlayers([]);
+    setMultiReady(false);setMultiPhase("join");setMultiResults([]);
+    setRoomCodeInput("");setMultiBoards(null);
     setMenuOpen(false);setShowConfirmReset(false);setShowCelebration(false);
   }
 
@@ -1113,10 +1196,7 @@ export default function Game(){
                     <div style={{fontSize:13,fontWeight:700,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}{s.boosted&&<span style={{fontSize:9,color:"#f59e42",marginLeft:5}}>⚡</span>}</div>
                     <div style={{fontSize:9,color:"#6b7280",fontFamily:"'Barlow',sans-serif"}}><span style={{color:c,fontWeight:700}}>{slotKey}</span> · {abbr} · {p.season}</div>
                   </div>
-                  <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontSize:12,fontWeight:800,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{tot}</div>
-                    <div style={{fontSize:8,color:"#4b5563",fontFamily:"'Barlow',sans-serif"}}>TOTAL</div>
-                  </div>
+
                 </div>
               );
             })}
@@ -1172,7 +1252,15 @@ export default function Game(){
               // Record + Grade
               const rgRow=el("div","display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px");
               const rb=ap(el("div","background:rgba(74,222,128,0.06);border:1px solid rgba(74,222,128,0.18);border-radius:12px;padding:12px;text-align:center"),el("div","font-size:8px;color:#6b7280;letter-spacing:0.1em;font-family:Barlow,sans-serif","RECORD"),el("div","font-size:42px;font-weight:900;line-height:0.9;color:"+tier.color,dailyResult.wins+"-"+dailyResult.losses),el("div","font-size:8px;color:"+tier.color+";margin-top:5px;letter-spacing:0.1em;font-weight:700",tier.label));
-              const gb=ap(el("div","background:rgba(245,158,66,0.06);border:1px solid rgba(245,158,66,0.18);border-radius:12px;padding:12px;text-align:center"),el("div","font-size:8px;color:#6b7280;letter-spacing:0.1em;font-family:Barlow,sans-serif","DRAFT GRADE"),el("div","font-size:42px;font-weight:900;line-height:0.9;color:"+grade.color,grade.grade));
+              const grPct2=grade.grade==="A+"?"100%":grade.grade==="A"?"92%":grade.grade==="B+"?"83%":grade.grade==="B"?"73%":grade.grade==="C+"?"63%":grade.grade==="C"?"53%":grade.grade==="D"?"38%":"15%";
+              const grBarDiv=el("div","display:flex;align-items:center;gap:4px;margin-top:8px");
+              const grBarF=el("div","font-size:7px;color:#4b5563;font-family:Barlow,sans-serif","F");
+              const grBarTrack=el("div","flex:1;height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden");
+              const grBarFill=el("div","height:100%;width:"+grPct2+";background:"+grade.color+";border-radius:2px");
+              grBarTrack.appendChild(grBarFill);
+              const grBarA=el("div","font-size:7px;color:#4b5563;font-family:Barlow,sans-serif","A+");
+              ap(grBarDiv,grBarF,grBarTrack,grBarA);
+              const gb=ap(el("div","background:rgba(245,158,66,0.06);border:1px solid rgba(245,158,66,0.18);border-radius:12px;padding:12px;text-align:center"),el("div","font-size:8px;color:#6b7280;letter-spacing:0.1em;font-family:Barlow,sans-serif","DRAFT GRADE"),el("div","font-size:42px;font-weight:900;line-height:0.9;color:"+grade.color,grade.grade),grBarDiv);
               ap(rgRow,rb,gb);
               // Stats
               const sr=el("div","background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:9px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;text-align:center");
@@ -1187,13 +1275,12 @@ export default function Game(){
               ["PG","SG","SF","PF","C"].forEach(sk=>{
                 const s=rosterSlots.find(sl=>sl.key===sk);if(!s||!s.player)return;
                 const p=s.player;const c=p.pos&&p.pos.startsWith("G")?"#f59e42":p.pos&&p.pos.startsWith("C")?"#60a5fa":"#4ade80";
-                const tot2=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
                 const ini=p.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
                 const abbr=tAbbr[p.team]||p.team.slice(0,3).toUpperCase();
                 const row=ap(el("div","display:flex;align-items:center;gap:7px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:9px;padding:7px 9px;margin-bottom:4px"),
                   el("div","width:26px;height:26px;border-radius:50%;background:"+c+"22;border:1px solid "+c+"55;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:"+c+";flex-shrink:0",ini),
                   ap(el("div","flex:1;min-width:0"),el("div","font-size:12px;font-weight:700;color:#f9fafb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",p.name+(s.boosted?" ⚡":"")),el("div","font-size:8px;color:#6b7280;font-family:Barlow,sans-serif",sk+" · "+abbr+" · "+p.season)),
-                  ap(el("div","text-align:right;flex-shrink:0"),el("div","font-size:11px;font-weight:800;color:#f9fafb",tot2),el("div","font-size:7px;color:#4b5563;font-family:Barlow,sans-serif","TOTAL")));
+);
                 rd.appendChild(row);
               });
               // CTA
@@ -1237,6 +1324,288 @@ export default function Game(){
     // Daily game uses same flow but with seeded boards, no lifelines, one boost
     // We reuse the main game flow by setting mode="daily"
     // This is handled in the main game render below via isDailyMode check
+  }
+
+  // ── MULTIPLAYER SCREENS ──────────────────────────────────────────────────────
+  // Multiplayer polling
+  useEffect(()=>{
+    if(!showMultiplayer||!multiRoom||multiPhase==="join")return;
+    const poll=setInterval(async()=>{
+      const data=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=*");
+      if(data&&data[0]){
+        const room=data[0];
+        setMultiPlayers(room.players||[]);
+        if(room.status==="playing"&&multiPhase==="lobby"){
+          setMultiBoards(generateMultiBoards(room.board_seed));
+          setMultiPhase("playing");setMode(multiMode);
+        }
+        if(room.status==="results"&&multiPhase==="waiting"){
+          setMultiResults(room.players||[]);
+          setMultiPhase("results");
+        }
+      }
+    },2000);
+    return()=>clearInterval(poll);
+  },[showMultiplayer,multiRoom,multiPhase]);
+
+  if(showMultiplayer){
+
+    // JOIN / CREATE ROOM
+    if(multiPhase==="join") return(
+      <div style={wrap}>
+        <div style={{width:"100%",paddingTop:40,paddingBottom:80,textAlign:"center"}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,marginBottom:6}}>Play with Friends</div>
+          <div style={{fontSize:12,color:"#6b7280",marginBottom:32}}>Same boards. Different picks. Who drafts best?</div>
+
+          {/* Mode selector */}
+          <div style={{display:"flex",gap:8,marginBottom:24,justifyContent:"center"}}>
+            {[["classic","Classic"],["hoopiq","HoopIQ"]].map(([key,label])=>(
+              <button key={key} onClick={()=>setMultiMode(key)} style={{
+                padding:"10px 24px",borderRadius:10,border:"none",cursor:"pointer",
+                background:multiMode===key?"#f59e42":"rgba(255,255,255,0.06)",
+                color:multiMode===key?"#07090f":"#9ca3af",
+                fontFamily:"'Barlow Condensed',sans-serif",fontSize:14,fontWeight:800,
+                letterSpacing:"0.06em",textTransform:"uppercase",
+                WebkitTapHighlightColor:"transparent"
+              }}>{label}</button>
+            ))}
+          </div>
+
+          {/* Create room */}
+          <button onClick={async()=>{
+            const code=generateRoomCode();
+            const seed=Math.floor(Math.random()*999999)+1;
+            await supaFetch("rooms",{method:"POST",body:JSON.stringify({
+              room_code:code,host_username:username||"Anonymous",board_seed:seed,
+              game_mode:multiMode,status:"lobby",
+              players:[{username:username||"Anonymous",ready:false,result:null}]
+            })});
+            setMultiRoom(code);setMultiPhase("lobby");
+            setMultiPlayers([{username:username||"Anonymous",ready:false,result:null}]);
+          }} style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
+            borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
+            fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
+            cursor:"pointer",textTransform:"uppercase",marginBottom:16,
+            WebkitTapHighlightColor:"transparent"}}>
+            Create Room
+          </button>
+
+          {/* Join room */}
+          <div style={{fontSize:12,color:"#6b7280",marginBottom:10}}>or enter a room code</div>
+          <input value={roomCodeInput} onChange={e=>setRoomCodeInput(e.target.value.toUpperCase().slice(0,4))}
+            placeholder="XXXX" maxLength={4}
+            style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1.5px solid rgba(255,255,255,0.15)",
+              borderRadius:12,padding:"14px 16px",fontSize:20,color:"#f9fafb",outline:"none",
+              boxSizing:"border-box",marginBottom:10,fontFamily:"'Barlow Condensed',sans-serif",
+              textAlign:"center",letterSpacing:"0.3em"}}/>
+          <button onClick={async()=>{
+            if(roomCodeInput.length!==4)return;
+            const data=await supaFetch("rooms?room_code=eq."+roomCodeInput+"&select=*");
+            if(data&&data[0]){
+              const room=data[0];
+              const newPlayers=[...(room.players||[]),{username:username||"Anonymous",ready:false,result:null}];
+              await supaFetch("rooms?room_code=eq."+roomCodeInput,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
+              setMultiRoom(roomCodeInput);setMultiPlayers(newPlayers);
+              setMultiMode(room.game_mode||"classic");
+              setMultiPhase(room.status==="playing"?"spectator":"lobby");
+            } else {
+              alert("Room not found. Check your code.");
+            }
+          }} style={{width:"100%",background:"rgba(255,255,255,0.06)",color:"#f9fafb",
+            border:"1px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px",
+            fontSize:15,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",
+            letterSpacing:"0.08em",cursor:"pointer",textTransform:"uppercase",
+            marginBottom:24,WebkitTapHighlightColor:"transparent"}}>
+            Join Room
+          </button>
+
+          <button onClick={()=>{setShowMultiplayer(false);setMultiPhase("join");setRoomCodeInput("");}}
+            style={{background:"none",border:"none",color:"#6b7280",fontSize:12,cursor:"pointer"}}>← Back</button>
+        </div>
+      </div>
+    );
+
+    // LOBBY
+    if(multiPhase==="lobby") return(
+      <div style={wrap}>
+        <div style={{width:"100%",paddingTop:40,paddingBottom:80,textAlign:"center"}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,marginBottom:6}}>Game Lobby</div>
+          <div style={{fontSize:12,color:"#6b7280",marginBottom:20}}>{multiMode==="hoopiq"?"HoopIQ Mode":"Classic Mode"}</div>
+
+          {/* Room code display */}
+          <div style={{background:"rgba(245,158,66,0.08)",border:"1px solid rgba(245,158,66,0.2)",
+            borderRadius:14,padding:"16px",marginBottom:24}}>
+            <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.14em",marginBottom:6}}>ROOM CODE</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:42,fontWeight:900,
+              color:"#f59e42",letterSpacing:"0.2em"}}>{multiRoom}</div>
+            <div style={{fontSize:11,color:"#6b7280",marginTop:6}}>Share this code with friends</div>
+          </div>
+
+          {/* Players list */}
+          <div style={{fontSize:9,color:"#6b7280",letterSpacing:"0.14em",marginBottom:10,textAlign:"left"}}>
+            PLAYERS ({multiPlayers.length}/8)
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:24}}>
+            {multiPlayers.map((player,idx)=>(
+              <div key={idx} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+                background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",
+                borderRadius:10,padding:"11px 14px"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(245,158,66,0.15)",
+                    border:"1px solid rgba(245,158,66,0.3)",display:"flex",alignItems:"center",
+                    justifyContent:"center",fontSize:10,fontWeight:800,color:"#f59e42",
+                    fontFamily:"'Barlow Condensed',sans-serif"}}>
+                    {(player.username||"A").slice(0,2).toUpperCase()}
+                  </div>
+                  <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,color:"#f9fafb"}}>{player.username}</div>
+                  {idx===0&&<div style={{fontSize:8,color:"#f59e42",background:"rgba(245,158,66,0.1)",
+                    border:"1px solid rgba(245,158,66,0.2)",borderRadius:3,padding:"1px 5px",
+                    letterSpacing:"0.06em"}}>HOST</div>}
+                </div>
+                <div style={{fontSize:11,fontWeight:700,color:player.ready?"#4ade80":"#6b7280",
+                  fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.06em"}}>
+                  {player.ready?"READY":"NOT READY"}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Ready / Start buttons */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <button onClick={async()=>{
+              const newPlayers=multiPlayers.map(p=>
+                p.username===(username||"Anonymous")?{...p,ready:!p.ready}:p
+              );
+              setMultiPlayers(newPlayers);setMultiReady(!multiReady);
+              await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
+            }} style={{width:"100%",background:multiReady?"rgba(74,222,128,0.15)":"rgba(255,255,255,0.06)",
+              color:multiReady?"#4ade80":"#f9fafb",
+              border:`1px solid ${multiReady?"rgba(74,222,128,0.3)":"rgba(255,255,255,0.15)"}`,
+              borderRadius:14,padding:"14px",fontSize:15,fontWeight:700,
+              fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
+              cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
+              {multiReady?"✓ Ready":"Set Ready"}
+            </button>
+
+            {multiPlayers[0]?.username===(username||"Anonymous")&&multiPlayers.filter(p=>p.ready).length>=2&&(
+              <button onClick={async()=>{
+                await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({status:"playing"})});
+              }} style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
+                borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
+                fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
+                cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
+                Start Game ({multiPlayers.filter(p=>p.ready).length} players)
+              </button>
+            )}
+
+            <button onClick={()=>{setShowMultiplayer(false);setMultiPhase("join");setMultiRoom(null);setRoomCodeInput("");}}
+              style={{background:"none",border:"none",color:"#6b7280",fontSize:12,cursor:"pointer"}}>Leave Room</button>
+          </div>
+        </div>
+      </div>
+    );
+
+    // WAITING — user finished, waiting for others
+    if(multiPhase==="waiting") return(
+      <div style={wrap}>
+        <div style={{width:"100%",paddingTop:80,textAlign:"center"}}>
+          <div style={{fontSize:28,marginBottom:16}}>⏳</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:900,marginBottom:8}}>Draft Complete!</div>
+          <div style={{fontSize:13,color:"#6b7280",marginBottom:24}}>
+            Waiting on {multiPlayers.filter(p=>!p.result).length} player{multiPlayers.filter(p=>!p.result).length!==1?"s":""} to finish drafting...
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {multiPlayers.map((player,idx)=>(
+              <div key={idx} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+                background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",
+                borderRadius:10,padding:"10px 14px"}}>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:14,fontWeight:700,color:"#f9fafb"}}>{player.username}</div>
+                <div style={{fontSize:11,fontWeight:700,color:player.result?"#4ade80":"#f59e42",
+                  fontFamily:"'Barlow Condensed',sans-serif"}}>
+                  {player.result?"DONE":"DRAFTING..."}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+
+    // RESULTS — simultaneous reveal
+    if(multiPhase==="results") return(
+      <div style={wrap}>
+        <div style={{width:"100%",paddingTop:30,paddingBottom:80}}>
+          <div style={{textAlign:"center",marginBottom:24}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,marginBottom:6}}>🏆 Final Standings</div>
+            <div style={{fontSize:12,color:"#6b7280"}}>Room {multiRoom}</div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[...multiResults].filter(p=>p.result).sort((a,b)=>{
+              const aw=a.result?.wins||0,bw=b.result?.wins||0;
+              if(bw!==aw)return bw-aw;
+              return((b.result?.teamOff||0)+(b.result?.teamDef||0))-((a.result?.teamOff||0)+(a.result?.teamDef||0));
+            }).map((player,idx)=>{
+              const medal=idx===0?"🥇":idx===1?"🥈":idx===2?"🥉":null;
+              const r=player.result;
+              const tier=getTier(r?.wins||0);
+              return(
+                <div key={idx} style={{background:idx===0?"rgba(245,158,66,0.06)":"rgba(255,255,255,0.03)",
+                  border:`1px solid ${idx===0?"rgba(245,158,66,0.2)":"rgba(255,255,255,0.07)"}`,
+                  borderRadius:14,padding:"14px 16px"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:900,
+                        color:"#6b7280",minWidth:24}}>{medal||`${idx+1}`}</div>
+                      <div>
+                        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:800,color:"#f9fafb"}}>{player.username}</div>
+                        <div style={{fontSize:10,color:tier.color,fontWeight:700,marginTop:1}}>{tier.label}</div>
+                      </div>
+                    </div>
+                    <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:32,fontWeight:900,color:tier.color}}>
+                      {r?.wins||0}-{r?.losses||0}
+                    </div>
+                  </div>
+                  {/* Roster preview */}
+                  {r?.roster&&(
+                    <div style={{display:"flex",gap:6}}>
+                      {r.roster.map((rp,ri)=>(
+                        <div key={ri} style={{flex:1,textAlign:"center"}}>
+                          <div style={{fontSize:8,color:"#6b7280",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{rp.name?.split(" ").pop()}</div>
+                          <div style={{fontSize:8,color:"#4b5563"}}>'{String(rp.season).slice(2)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:20}}>
+            <button onClick={()=>{setShowMultiplayer(false);setMultiPhase("join");setMultiRoom(null);
+              setMultiResults([]);setMode(null);reset(true);}}
+              style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
+                borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
+                fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
+                cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
+              Back to Home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+
+    // SPECTATOR — joined late
+    if(multiPhase==="spectator") return(
+      <div style={wrap}>
+        <div style={{width:"100%",paddingTop:80,textAlign:"center"}}>
+          <div style={{fontSize:28,marginBottom:16}}>👁</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:900,marginBottom:8}}>Spectating</div>
+          <div style={{fontSize:13,color:"#6b7280",marginBottom:24}}>Game in progress. You'll see results when everyone finishes.</div>
+          <button onClick={()=>{setShowMultiplayer(false);setMultiPhase("join");}}
+            style={{background:"none",border:"none",color:"#6b7280",fontSize:12,cursor:"pointer"}}>← Leave</button>
+        </div>
+      </div>
+    );
   }
 
   // ── COMING SOON PAGE ────────────────────────────────────────────────────────
@@ -1348,8 +1717,8 @@ export default function Game(){
             );
           })}
         </div>
-        <div style={{fontSize:11,color:"#6b7280",letterSpacing:"0.1em",marginBottom:4}}>44-0 TEAMS ONLY · RESETS DAILY 9AM</div>
-        <div style={{fontSize:11,color:"#4b5563",marginBottom:20}}>Ranked by combined OFF + DEF rating</div>
+        <div style={{fontSize:11,color:"#6b7280",letterSpacing:"0.1em",marginBottom:4}}>TOP TEAMS · RESETS DAILY 9AM</div>
+        <div style={{fontSize:11,color:"#4b5563",marginBottom:20}}>Ranked by wins, then combined team rating</div>
         {leaderboard.map((entry,idx)=>{
           const medal=idx===0?"🥇":idx===1?"🥈":idx===2?"🥉":null;
           return(
@@ -1368,7 +1737,9 @@ export default function Game(){
                     </div>
                   </div>
                 </div>
-                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:"#4ade80"}}>44-0</div>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,
+                  color:entry.wins>=44?"#f59e42":entry.wins>=37?"#4ade80":entry.wins>=30?"#60a5fa":"#a78bfa"}}>
+                  {entry.wins}-{entry.losses}</div>
               </div>
               <div style={{display:"flex",gap:6}}>
                 {entry.roster.map((p,i)=>{
@@ -1500,12 +1871,16 @@ export default function Game(){
             </button>
           ))}
 
-          {/* Play with Friends — coming next update */}
-          <button style={{background:"rgba(255,255,255,0.02)",color:"#4b5563",
-            border:"1px solid rgba(255,255,255,0.06)",borderRadius:14,padding:"16px 24px",
-            cursor:"default",display:"flex",flexDirection:"column",gap:4,textAlign:"left",opacity:0.5}}>
+          {/* Play with Friends */}
+          <button onClick={()=>{
+            if(!username){setShowUsernamePrompt(true);setTimeout(()=>setShowMultiplayer(true),50);}
+            else setShowMultiplayer(true);
+          }} style={{background:"rgba(255,255,255,0.05)",color:"#f9fafb",
+            border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,padding:"16px 24px",
+            cursor:"pointer",display:"flex",flexDirection:"column",gap:4,textAlign:"left",
+            WebkitTapHighlightColor:"transparent"}}>
             <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,letterSpacing:"0.06em",textTransform:"uppercase"}}>Play with Friends</span>
-            <span style={{fontSize:12}}>Multiplayer · Coming soon</span>
+            <span style={{fontSize:12,opacity:0.6}}>Same boards · Different picks · One boost each</span>
           </button>
         </div>
         <div style={{background:"rgba(255,255,255,0.025)",borderRadius:14,padding:"18px 20px",
@@ -1580,7 +1955,6 @@ export default function Game(){
                 const s=slots.find(sl=>sl.key===slotKey);
                 if(!s||!s.player)return null;
                 const p=s.player;const c=posColor(p.pos);
-                const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
                 const teamAbbr={"Las Vegas Aces":"LVA","New York Liberty":"NYL","Seattle Storm":"SEA",
                   "Minnesota Lynx":"MIN","Connecticut Sun":"CON","Indiana Fever":"IND",
                   "Phoenix Mercury":"PHX","Los Angeles Sparks":"LAL","Houston Comets":"HOU",
@@ -1601,10 +1975,7 @@ export default function Game(){
                         <span style={{color:c,fontWeight:700}}>{s.key}</span> · {abbr} · {p.season}
                       </div>
                     </div>
-                    <div style={{textAlign:"right",flexShrink:0}}>
-                      <div style={{fontSize:13,fontWeight:800,color:"#f9fafb",fontFamily:"'Barlow Condensed',sans-serif"}}>{tot}</div>
-                      <div style={{fontSize:9,color:"#4b5563",fontFamily:"'Barlow',sans-serif"}}>TOTAL</div>
-                    </div>
+
                   </div>
                 );
               })}
@@ -1675,7 +2046,6 @@ export default function Game(){
                 if(!s||!s.player)return;
                 const p=s.player;
                 const c=p.pos&&p.pos.startsWith("G")?"#f59e42":p.pos&&p.pos.startsWith("C")?"#60a5fa":"#4ade80";
-                const tot=(p.pts+p.reb+p.ast+p.stl+p.blk).toFixed(1);
                 const ini=p.name.split(" ").map(function(w){return w[0];}).join("").slice(0,2).toUpperCase();
                 const abbr=teamAbbrMap[p.team]||p.team.slice(0,3).toUpperCase();
                 const row=document.createElement("div");
@@ -1692,16 +2062,7 @@ export default function Game(){
                 sub.style.cssText="font-size:9px;color:#6b7280;margin-top:1px;font-family:Barlow,sans-serif";
                 sub.textContent=slotKey+" · "+abbr+" · "+p.season;
                 info.appendChild(nm);info.appendChild(sub);
-                const stat=document.createElement("div");
-                stat.style.cssText="text-align:right;flex-shrink:0";
-                const sv=document.createElement("div");
-                sv.style.cssText="font-size:13px;font-weight:800;color:#f9fafb;font-family:Barlow Condensed,sans-serif";
-                sv.textContent=tot;
-                const sl=document.createElement("div");
-                sl.style.cssText="font-size:8px;color:#4b5563;font-family:Barlow,sans-serif";
-                sl.textContent="TOTAL";
-                stat.appendChild(sv);stat.appendChild(sl);
-                row.appendChild(av);row.appendChild(info);row.appendChild(stat);
+                row.appendChild(av);row.appendChild(info);
                 rosterDiv.appendChild(row);
               });
 
@@ -1755,6 +2116,9 @@ export default function Game(){
                 setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
                 setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
                 setBoostUsed(false);setPendingBoost(false);setShowDaily(false);
+    setShowMultiplayer(false);setMultiRoom(null);setMultiPlayers([]);
+    setMultiReady(false);setMultiPhase("join");setMultiResults([]);
+    setRoomCodeInput("");setMultiBoards(null);
                 setShowConfirmReset(false);setShowCelebration(false);
                 setMode(currentMode);
               }} style={{flex:2,background:"#f59e42",color:"#07090f",
@@ -1802,28 +2166,11 @@ export default function Game(){
             <span style={{fontSize:12,color:"#f59e42",fontWeight:700}}>44-0</span>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <button onClick={()=>{
-              const newMode=hoopIQ?"classic":"hoopiq";
-              if(filledCount>0){
-                if(window.confirm("Switch to "+(newMode==="hoopiq"?"HoopIQ":"Classic")+"? You will lose your current draft.")){
-                  setPhase("spin");setRound(0);setCurrentTeam(null);
-                  setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
-                  setDraftedNames(new Set());setUsedTeams(new Set());
-                  setPick1(null);setPick2(null);setResult(null);setTierMsg("");
-                  setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
-                  setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
-                  setBoostUsed(false);setPendingBoost(false);
-                  setMode(newMode);
-                }
-              } else {
-                setMode(newMode);
-              }
-            }} style={{background:hoopIQ?"rgba(167,139,250,0.13)":"rgba(249,158,66,0.12)",
+            <div style={{background:hoopIQ?"rgba(167,139,250,0.13)":"rgba(249,158,66,0.12)",
               border:`1px solid ${hoopIQ?"#a78bfa33":"#f59e4233"}`,borderRadius:20,
-              padding:"3px 10px",fontSize:10,color:hoopIQ?"#a78bfa":"#f59e42",letterSpacing:"0.08em",fontWeight:700,
-              cursor:"pointer",WebkitTapHighlightColor:"transparent"}}>
-              {hoopIQ?"HOOPIQ ⇄":"CLASSIC ⇄"}
-            </button>
+              padding:"3px 10px",fontSize:10,color:hoopIQ?"#a78bfa":"#f59e42",letterSpacing:"0.08em",fontWeight:700}}>
+              {hoopIQ?"HOOPIQ":"CLASSIC"}
+            </div>
             <div style={{fontSize:11,color:"#6b7280"}}>{filledCount}/5</div>
             <HBurg/>
           </div>
@@ -1871,7 +2218,7 @@ export default function Game(){
                 </div>
               </div>
             </div>
-            {!isDailyMode&&<div style={{display:"flex",gap:7,marginBottom:14}}>
+            {!isDailyMode&&!showMultiplayer&&<div style={{display:"flex",gap:7,marginBottom:14}}>
               <Lifeline emoji="🔄" name="Fresh Start" desc="New team" used={freshUsed} locked={pickTwoOn}
                 onClick={()=>{setFreshUsed(true);setPhase("spin");setCurrentTeam(null);setPickTwoOn(false);doSpin({exclude:currentTeam});}}/>
               <Lifeline emoji="🏠" name="Hometown" desc="Reshuffle" used={homeUsed} locked={pickTwoOn}
@@ -1879,7 +2226,7 @@ export default function Game(){
               <Lifeline emoji="2️⃣" name="Pick Two" desc="Draft 2" used={twoUsed} locked={filledCount>=4}
                 onClick={()=>{setTwoUsed(true);setPickTwoOn(true);setPick1(null);setPick2(null);}}/>
             </div>}
-            {isDailyMode&&(
+            {(isDailyMode||showMultiplayer)&&(
               <div style={{display:"flex",gap:7,marginBottom:14}}>
                 <button onClick={()=>{if(!boostUsed)setPendingBoost(b=>!b);}} style={{
                   flex:1,background:pendingBoost?"rgba(245,158,66,0.15)":boostUsed?"rgba(255,255,255,0.01)":"rgba(255,255,255,0.04)",
