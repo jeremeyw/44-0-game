@@ -514,10 +514,10 @@ function StatPill({label,value}){
   );
 }
 
-function PlayerCard({player,selected,secondSel,onClick,pickTwo,hoopIQ}){
+function PlayerCard({player,selected,secondSel,onClick,pickTwo,hoopIQ,boostPending}){
   const c=posColor(player.pos);
-  const border=selected?"#f59e42":secondSel?"#4ade80":"rgba(255,255,255,0.08)";
-  const bg=selected?"rgba(249,158,66,0.10)":secondSel?"rgba(74,222,128,0.08)":"rgba(255,255,255,0.03)";
+  const border=selected?"#f59e42":secondSel?"#4ade80":boostPending?"rgba(245,158,66,0.3)":"rgba(255,255,255,0.08)";
+  const bg=selected?"rgba(249,158,66,0.10)":secondSel?"rgba(74,222,128,0.08)":boostPending?"rgba(245,158,66,0.03)":"rgba(255,255,255,0.03)";
   const badge=selected?(pickTwo?"1ST":"✓"):secondSel?"2ND":null;
   return(
     <div onClick={onClick} style={{background:bg,border:`1.5px solid ${border}`,borderRadius:14,
@@ -707,6 +707,7 @@ export default function Game(){
 
   // Multiplayer polling — only active when in a room
   const [showMultiplayer,setShowMultiplayer]=useState(false);
+  const [multiGameCount,setMultiGameCount]=useState(0);
   const [multiRoom,setMultiRoom]=useState(null);
   const [multiPlayers,setMultiPlayers]=useState([]);
   const [multiReady,setMultiReady]=useState(false);
@@ -785,7 +786,7 @@ export default function Game(){
       // Shuffle the franchise order per player using username as extra seed
       const userSeed=Array.from(username||"anon").reduce((a,c)=>a+c.charCodeAt(0),0);
       const roomSeed=Array.from(multiRoom||"").reduce((a,c)=>a+c.charCodeAt(0),0);
-      const playerRand=seededRand((roomSeed*37+userSeed*13)&0x7fffffff);
+      const playerRand=seededRand((roomSeed*37+userSeed*13+multiGameCount*97)&0x7fffffff);
       multiTeamsList=fisherYates(multiBoards.map(b=>b.team),playerRand);
     }
     const allTeams=dailyTeamsList||multiTeamsList||[...new Set(PLAYER_DB.map(p=>p.team))].sort();
@@ -889,7 +890,7 @@ export default function Game(){
     picks.forEach(p=>{
       let player=p;
       // Apply boost in daily mode
-      if(isDailyMode&&pendingBoost&&!boostUsed&&picks[0]===p){
+      if((isDailyMode||showMultiplayer)&&pendingBoost&&!boostUsed&&picks[0]===p){
         const baseRating=(p.off+p.def)/2;
         const boost=baseRating>=90?2:baseRating>=82?4:baseRating>=74?6:8;
         player={...p,off:Math.min(99,p.off+boost),def:Math.min(99,p.def+boost),boosted:true};
@@ -1786,6 +1787,7 @@ export default function Game(){
                   board_seed:newSeed,status:"lobby",players:resetPlayers
                 })});
                 setMultiResults([]);setMultiReady(false);setMultiPlayers(resetPlayers);
+                setMultiGameCount(c=>c+1);
                 setMultiBoards(null);setMode(null);
                 setPhase("spin");setRound(0);setCurrentTeam(null);
                 setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
@@ -1804,7 +1806,7 @@ export default function Game(){
 
               {/* Back to Home */}
               <button onClick={()=>{setShowMultiplayer(false);setMultiPhase("join");setMultiRoom(null);
-                setMultiResults([]);setMode(null);
+                setMultiResults([]);setMode(null);setMultiGameCount(0);
                 setPhase("spin");setRound(0);setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
                 setDraftedNames(new Set());setUsedTeams(new Set());
                 setPick1(null);setPick2(null);setResult(null);setTierMsg("");
@@ -2453,20 +2455,20 @@ export default function Game(){
               <Lifeline emoji="2️⃣" name="Pick Two" desc="Draft 2" used={twoUsed} locked={filledCount>=4}
                 onClick={()=>{setTwoUsed(true);setPickTwoOn(true);setPick1(null);setPick2(null);}}/>
             </div>}
-            {(isDailyMode||showMultiplayer)&&(
+            {(isDailyMode||showMultiplayer)&&!boostUsed&&(
               <div style={{display:"flex",gap:7,marginBottom:14}}>
-                <button onClick={()=>{if(!boostUsed)setPendingBoost(b=>!b);}} style={{
-                  flex:1,background:pendingBoost?"rgba(245,158,66,0.15)":boostUsed?"rgba(255,255,255,0.01)":"rgba(255,255,255,0.04)",
-                  border:`1px solid ${pendingBoost?"rgba(245,158,66,0.4)":boostUsed?"rgba(255,255,255,0.05)":"rgba(255,255,255,0.12)"}`,
-                  borderRadius:11,padding:"9px 4px",cursor:boostUsed?"default":"pointer",
-                  opacity:boostUsed?0.25:1,textAlign:"center",WebkitTapHighlightColor:"transparent"}}>
-                  <div style={{fontSize:17,marginBottom:3}}>{boostUsed?"✗":"⚡"}</div>
-                  <div style={{fontSize:10,fontWeight:700,color:pendingBoost?"#f59e42":boostUsed?"#374151":"#e5e7eb",letterSpacing:"0.04em",marginBottom:1}}>BOOST</div>
-                  <div style={{fontSize:9,color:"#4b5563",lineHeight:1.3}}>{boostUsed?"Used":pendingBoost?"Select player":"Apply to next pick"}</div>
+                <button onClick={()=>setPendingBoost(b=>!b)} style={{
+                  flex:1,background:pendingBoost?"rgba(245,158,66,0.15)":"rgba(255,255,255,0.04)",
+                  border:`1px solid ${pendingBoost?"rgba(245,158,66,0.4)":"rgba(255,255,255,0.12)"}`,
+                  borderRadius:11,padding:"9px 4px",cursor:"pointer",
+                  textAlign:"center",WebkitTapHighlightColor:"transparent"}}>
+                  <div style={{fontSize:17,marginBottom:3}}>⚡</div>
+                  <div style={{fontSize:10,fontWeight:700,color:pendingBoost?"#f59e42":"#e5e7eb",letterSpacing:"0.04em",marginBottom:1}}>BOOST</div>
+                  <div style={{fontSize:9,color:"#4b5563",lineHeight:1.3}}>{pendingBoost?"Select a player":"Apply to next pick"}</div>
                 </button>
                 <div style={{flex:4,background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:11,padding:"9px 10px",display:"flex",alignItems:"center"}}>
                   <div style={{fontSize:11,color:"#6b7280",fontFamily:"'Barlow',sans-serif",lineHeight:1.4}}>
-                    {boostUsed?"Boost used this draft.":pendingBoost?"⚡ Tap a player to apply your boost":"No lifelines in Daily Challenge. One boost available — higher-rated players get a smaller boost."}
+                    {pendingBoost?"⚡ Tap a player to apply your boost — higher-rated players get a smaller boost":"One boost available. Tap BOOST then select a player."}
                   </div>
                 </div>
               </div>
@@ -2479,7 +2481,8 @@ export default function Game(){
               ):board.map(p=>(
                 <PlayerCard key={p.id} player={p} hoopIQ={hoopIQ}
                   selected={pick1?.id===p.id} secondSel={pick2?.id===p.id}
-                  pickTwo={pickTwoOn} onClick={()=>handleCardClick(p)}/>
+                  pickTwo={pickTwoOn} boostPending={pendingBoost&&!boostUsed}
+                  onClick={()=>handleCardClick(p)}/>
               ))}
             </div>
           </div>
