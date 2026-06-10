@@ -15,7 +15,8 @@ async function supaFetch(path, opts={}) {
     console.log("[Supabase]", opts.method||"GET", url);
     const r = await fetch(url, {
       headers: { "apikey": SUPA_KEY, "Authorization": "Bearer "+SUPA_KEY,
-        "Content-Type": "application/json", "Prefer": "return=representation", ...opts.headers },
+        "Content-Type": "application/json", "Prefer": "return=representation",
+        ...(opts.headers||{}) },
       ...opts
     });
     console.log("[Supabase] response status:", r.status);
@@ -724,7 +725,16 @@ export default function Game(){
         const data=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=*");
         if(data&&Array.isArray(data)&&data[0]){
           const room=data[0];
-          setMultiPlayers(room.players||[]);
+          // Merge DB players with local ready state to avoid reset
+          const dbPlayers=room.players||[];
+          setMultiPlayers(prev=>{
+            return dbPlayers.map(dbP=>{
+              const local=prev.find(lP=>lP.username===dbP.username);
+              // Keep local ready state if it's more recent (true overrides false)
+              if(local&&local.ready&&!dbP.ready) return{...dbP,ready:true};
+              return dbP;
+            });
+          });
           if(room.status==="playing"&&multiPhase==="lobby"){
             setMultiBoards(generateMultiBoards(room.board_seed));
             setMultiPhase("playing");setMode(multiMode);
@@ -801,8 +811,8 @@ export default function Game(){
             const dailyBoard=dailyBoardsFull.find(b=>b.team===chosen);
             const filteredBoard=dailyBoard?dailyBoard.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
             setBoard(filteredBoard.length?filteredBoard:generateBoard(chosen,draftedNames,false));
-          } else if(showMultiplayer&&multiBoards){
-            const mBoard=multiBoards.find(b=>b.team===chosen);
+          } else if(showMultiplayer&&multiBoards&&multiBoards.length>0){
+            const mBoard=multiBoards.find(b=>b.team===chosen)||multiBoards[round]||null;
             const filteredBoard=mBoard?mBoard.board.filter(p=>!draftedNames.has(playerBase(p.name))):[];
             setBoard(filteredBoard.length?filteredBoard:generateBoard(chosen,draftedNames,false));
           } else {
@@ -1427,8 +1437,14 @@ export default function Game(){
             const data=await supaFetch("rooms?room_code=eq."+roomCodeInput+"&select=*");
             if(data&&data[0]){
               const room=data[0];
-              const newPlayers=[...(room.players||[]),{username:username||"Anonymous",ready:false,result:null}];
-              await supaFetch("rooms?room_code=eq."+roomCodeInput,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify({players:newPlayers})});
+              const me=username||"Anonymous";
+              const existing=(room.players||[]);
+              // Only add if not already in room
+              const alreadyIn=existing.find(p=>p.username===me);
+              const newPlayers=alreadyIn?existing:[...existing,{username:me,ready:false,result:null}];
+              if(!alreadyIn){
+                await supaFetch("rooms?room_code=eq."+roomCodeInput,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
+              }
               setMultiRoom(roomCodeInput);setMultiPlayers(newPlayers);
               setMultiMode(room.game_mode||"classic");
               setMultiPhase(room.status==="playing"?"spectator":"lobby");
@@ -1501,7 +1517,7 @@ export default function Game(){
                 p.username===(username||"Anonymous")?{...p,ready:!p.ready}:p
               );
               setMultiPlayers(newPlayers);setMultiReady(!multiReady);
-              await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify({players:newPlayers})});
+              await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
             }} style={{width:"100%",background:multiReady?"rgba(74,222,128,0.15)":"rgba(255,255,255,0.06)",
               color:multiReady?"#4ade80":"#f9fafb",
               border:`1px solid ${multiReady?"rgba(74,222,128,0.3)":"rgba(255,255,255,0.15)"}`,
