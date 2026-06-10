@@ -725,13 +725,16 @@ export default function Game(){
         const data=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=*");
         if(data&&Array.isArray(data)&&data[0]){
           const room=data[0];
-          // Merge DB players with local ready state to avoid reset
           const dbPlayers=room.players||[];
+          const me2=username||"Anonymous";
           setMultiPlayers(prev=>{
             return dbPlayers.map(dbP=>{
-              const local=prev.find(lP=>lP.username===dbP.username);
-              // Keep local ready state if it's more recent (true overrides false)
-              if(local&&local.ready&&!dbP.ready) return{...dbP,ready:true};
+              // For your own entry: trust local state if you just set it ready
+              // For others: trust DB (their PATCH already saved)
+              if(dbP.username===me2){
+                const localMe=prev.find(lP=>lP.username===me2);
+                if(localMe&&localMe.ready&&!dbP.ready) return{...dbP,ready:true};
+              }
               return dbP;
             });
           });
@@ -742,6 +745,19 @@ export default function Game(){
           if(room.status==="results"&&multiPhase==="waiting"){
             setMultiResults(room.players||[]);
             setMultiPhase("results");
+          }
+          // Rematch — host reset room back to lobby
+          if(room.status==="lobby"&&multiPhase==="results"){
+            setMultiResults([]);setMultiReady(false);
+            setMultiBoards(null);setMode(null);
+            setPhase("spin");setRound(0);setCurrentTeam(null);
+            setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
+            setDraftedNames(new Set());setUsedTeams(new Set());
+            setPick1(null);setPick2(null);setResult(null);setTierMsg("");
+            setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
+            setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
+            setBoostUsed(false);setPendingBoost(false);
+            setMultiPhase("lobby");
           }
         }
       }catch(e){}
@@ -914,7 +930,10 @@ export default function Game(){
       if(showMultiplayer&&multiRoom){
         const name2=username||"Anonymous";
         const myResult={wins:res.wins,losses:res.losses,teamOff:res.teamOff,teamDef:res.teamDef,
-          roster:newSlots.filter(s=>s.player).map(s=>({name:s.player.name,season:s.player.season,slot:s.key}))};
+          roster:newSlots.filter(s=>s.player).map(s=>({
+            name:s.player.name,season:s.player.season,slot:s.key,
+            boosted:s.player.boosted||false
+          }))};
         supaFetch("rooms?room_code=eq."+multiRoom+"&select=players").then(data=>{
           if(data&&data[0]){
             const updatedPlayers=(data[0].players||[]).map(p=>
@@ -1513,11 +1532,20 @@ export default function Game(){
           {/* Ready / Start buttons */}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <button onClick={async()=>{
+              const me=username||"Anonymous";
+              const newReady=!multiReady;
               const newPlayers=multiPlayers.map(p=>
-                p.username===(username||"Anonymous")?{...p,ready:!p.ready}:p
+                p.username===me?{...p,ready:newReady}:p
               );
-              setMultiPlayers(newPlayers);setMultiReady(!multiReady);
-              await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
+              setMultiPlayers(newPlayers);setMultiReady(newReady);
+              // Retry up to 3 times to ensure it saves
+              let saved=false;
+              for(let attempt=0;attempt<3;attempt++){
+                const res=await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
+                if(res){saved=true;break;}
+                await new Promise(r=>setTimeout(r,500));
+              }
+              if(!saved)console.error("[Multiplayer] Failed to save ready status");
             }} style={{width:"100%",background:multiReady?"rgba(74,222,128,0.15)":"rgba(255,255,255,0.06)",
               color:multiReady?"#4ade80":"#f9fafb",
               border:`1px solid ${multiReady?"rgba(74,222,128,0.3)":"rgba(255,255,255,0.15)"}`,
@@ -1572,69 +1600,211 @@ export default function Game(){
     );
 
     // RESULTS — simultaneous reveal
-    if(multiPhase==="results") return(
-      <div style={wrap}>
-        <div style={{width:"100%",paddingTop:30,paddingBottom:80}}>
-          <div style={{textAlign:"center",marginBottom:24}}>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,marginBottom:6}}>🏆 Final Standings</div>
-            <div style={{fontSize:12,color:"#6b7280"}}>Room {multiRoom}</div>
-          </div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {[...multiResults].filter(function(p){return p&&p.result;}).sort(function(a,b){
-              var aw=(a.result&&a.result.wins)||0,bw=(b.result&&b.result.wins)||0;
-              if(bw!==aw)return bw-aw;
-              var aTotal=((a.result&&a.result.teamOff)||0)+((a.result&&a.result.teamDef)||0);
-              var bTotal=((b.result&&b.result.teamOff)||0)+((b.result&&b.result.teamDef)||0);
-              return bTotal-aTotal;
-            }).map((player,idx)=>{
-              const medal=idx===0?"🥇":idx===1?"🥈":idx===2?"🥉":null;
-              const r=player.result||{};
-              const tier=getTier(r.wins||0);
-              return(
-                <div key={idx} style={{background:idx===0?"rgba(245,158,66,0.06)":"rgba(255,255,255,0.03)",
-                  border:`1px solid ${idx===0?"rgba(245,158,66,0.2)":"rgba(255,255,255,0.07)"}`,
-                  borderRadius:14,padding:"14px 16px"}}>
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:900,
-                        color:"#6b7280",minWidth:24}}>{medal||`${idx+1}`}</div>
-                      <div>
-                        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:800,color:"#f9fafb"}}>{player.username}</div>
-                        <div style={{fontSize:10,color:tier.color,fontWeight:700,marginTop:1}}>{tier.label}</div>
+    if(multiPhase==="results"){
+      const sortedResults=[...multiResults].filter(p=>p&&p.result).sort((a,b)=>{
+        const aw=(a.result&&a.result.wins)||0,bw=(b.result&&b.result.wins)||0;
+        if(bw!==aw)return bw-aw;
+        const aOvr=((a.result&&a.result.teamOff)||0)+((a.result&&a.result.teamDef)||0);
+        const bOvr=((b.result&&b.result.teamOff)||0)+((b.result&&b.result.teamDef)||0);
+        return bOvr-aOvr;
+      });
+      return(
+        <div style={wrap}>
+          <div style={{width:"100%",paddingTop:30,paddingBottom:100}}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,marginBottom:4}}>🏆 Final Standings</div>
+              <div style={{fontSize:12,color:"#6b7280"}}>Room {multiRoom} · {multiMode==="hoopiq"?"HoopIQ":"Classic"}</div>
+            </div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+              {sortedResults.map((player,idx)=>{
+                const medal=idx===0?"🥇":idx===1?"🥈":idx===2?"🥉":`${idx+1}`;
+                const r=player.result||{};
+                const tier=getTier(r.wins||0);
+                const ovr=Math.round(((r.teamOff||0)+(r.teamDef||0))/2);
+                const isMe=(player.username===(username||"Anonymous"));
+                return(
+                  <div key={idx} style={{background:idx===0?"rgba(245,158,66,0.06)":isMe?"rgba(255,255,255,0.05)":"rgba(255,255,255,0.03)",
+                    border:`1px solid ${idx===0?"rgba(245,158,66,0.25)":isMe?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.07)"}`,
+                    borderRadius:14,padding:"14px 16px"}}>
+
+                    {/* Header row */}
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <div style={{fontSize:20}}>{medal}</div>
+                        <div>
+                          <div style={{display:"flex",alignItems:"center",gap:6}}>
+                            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:800,color:"#f9fafb"}}>{player.username}</div>
+                            {isMe&&<div style={{fontSize:8,color:"#f59e42",background:"rgba(245,158,66,0.1)",border:"1px solid rgba(245,158,66,0.2)",borderRadius:3,padding:"1px 5px",letterSpacing:"0.06em"}}>YOU</div>}
+                          </div>
+                          <div style={{fontSize:10,color:tier.color,fontWeight:700,marginTop:1,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.06em"}}>{tier.label}</div>
+                        </div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:32,fontWeight:900,color:tier.color,lineHeight:1}}>{r.wins||0}-{r.losses||0}</div>
+                        <div style={{fontSize:10,color:"#6b7280",marginTop:2}}>OVR <span style={{color:"#f9fafb",fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",fontSize:13}}>{ovr}</span></div>
                       </div>
                     </div>
-                    <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:32,fontWeight:900,color:tier.color}}>
-                      {r.wins||0}-{r.losses||0}
-                    </div>
+
+                    {/* Roster with boost ring */}
+                    {r.roster&&r.roster.length>0&&(
+                      <div style={{display:"flex",gap:5,justifyContent:"space-between"}}>
+                        {r.roster.map((rp,ri)=>{
+                          const ini=(rp.name||"??").split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+                          const isBoosted=rp.boosted===true;
+                          const posColor2=rp.slot&&rp.slot.startsWith("C")?"#60a5fa":rp.slot&&(rp.slot==="SF"||rp.slot==="PF")?"#4ade80":"#f59e42";
+                          return(
+                            <div key={ri} style={{flex:1,textAlign:"center"}}>
+                              <div style={{width:30,height:30,borderRadius:"50%",margin:"0 auto 3px",
+                                background:posColor2+"22",
+                                border:isBoosted?"2.5px solid #f59e42":"1.5px solid "+posColor2+"55",
+                                boxShadow:isBoosted?"0 0 8px rgba(245,158,66,0.6)":"none",
+                                display:"flex",alignItems:"center",justifyContent:"center",
+                                fontSize:9,fontWeight:800,color:isBoosted?"#f59e42":posColor2,
+                                fontFamily:"'Barlow Condensed',sans-serif",
+                                position:"relative"}}>
+                                {ini}
+                                {isBoosted&&<div style={{position:"absolute",top:-4,right:-4,fontSize:8}}>⚡</div>}
+                              </div>
+                              <div style={{fontSize:8,color:"#9ca3af",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"'Barlow',sans-serif"}}>{(rp.name||"").split(" ").pop()}</div>
+                              <div style={{fontSize:7,color:"#4b5563"}}>&apos;{String(rp.season||"").slice(2)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                  {/* Roster preview */}
-                  {r.roster&&(
-                    <div style={{display:"flex",gap:6}}>
-                      {r.roster.map((rp,ri)=>(
-                        <div key={ri} style={{flex:1,textAlign:"center"}}>
-                          <div style={{fontSize:8,color:"#6b7280",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{(rp.name||"").split(" ").pop()}</div>
-                          <div style={{fontSize:8,color:"#4b5563"}}>'{String(rp.season).slice(2)}</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:20}}>
-            <button onClick={()=>{setShowMultiplayer(false);setMultiPhase("join");setMultiRoom(null);
-              setMultiResults([]);setMode(null);reset(true);}}
-              style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
+                );
+              })}
+            </div>
+
+            {/* Buttons */}
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {/* Share standings */}
+              <button onClick={async()=>{
+                if(!window.html2canvas){
+                  await new Promise((res,rej)=>{
+                    const s=document.createElement("script");
+                    s.src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+                    s.onload=res;s.onerror=rej;document.head.appendChild(s);
+                  });
+                }
+                const card=document.createElement("div");
+                card.style.cssText="position:fixed;left:-9999px;top:0;width:390px;background:#07090f;color:#f9fafb;padding:20px 16px 24px;box-sizing:border-box;font-family:Barlow Condensed,sans-serif;";
+                function el2(tag,css,txt){const e=document.createElement(tag);if(css)e.style.cssText=css;if(txt!==undefined)e.textContent=txt;return e;}
+                function ap2(parent,...kids){kids.forEach(k=>parent.appendChild(k));return parent;}
+                // Header
+                ap2(card,ap2(el2("div","text-align:center;margin-bottom:14px"),
+                  el2("div","font-size:9px;color:#f59e42;letter-spacing:0.2em;font-weight:700","DRAFTED · PLAY WITH FRIENDS"),
+                  el2("div","font-size:22px;font-weight:900;margin:6px 0","🏆 Final Standings"),
+                  el2("div","font-size:10px;color:#6b7280;font-family:Barlow,sans-serif","Room "+multiRoom)
+                ));
+                // Results
+                sortedResults.forEach((player,idx)=>{
+                  const r=player.result||{};
+                  const tier=getTier(r.wins||0);
+                  const ovr2=Math.round(((r.teamOff||0)+(r.teamDef||0))/2);
+                  const medal2=idx===0?"🥇":idx===1?"🥈":idx===2?"🥉":`${idx+1}.`;
+                  const row=ap2(el2("div","background:"+(idx===0?"rgba(245,158,66,0.06)":"rgba(255,255,255,0.03)")+";border:1px solid "+(idx===0?"rgba(245,158,66,0.2)":"rgba(255,255,255,0.07)")+";border-radius:12px;padding:12px 14px;margin-bottom:8px"),
+                    ap2(el2("div","display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"),
+                      ap2(el2("div","display:flex;align-items:center;gap:8px"),
+                        el2("div","font-size:18px",medal2),
+                        ap2(el2("div"),
+                          el2("div","font-size:16px;font-weight:800;color:#f9fafb",player.username),
+                          el2("div","font-size:9px;color:"+tier.color+";font-weight:700;letter-spacing:0.06em",tier.label)
+                        )
+                      ),
+                      ap2(el2("div","text-align:right"),
+                        el2("div","font-size:28px;font-weight:900;color:"+tier.color+";line-height:1",(r.wins||0)+"-"+(r.losses||0)),
+                        el2("div","font-size:9px;color:#6b7280","OVR "+ovr2)
+                      )
+                    )
+                  );
+                  if(r.roster&&r.roster.length>0){
+                    const rosterRow=el2("div","display:flex;gap:4px;justify-content:space-between");
+                    r.roster.forEach(rp=>{
+                      const ini2=(rp.name||"??").split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+                      const isBoosted2=rp.boosted===true;
+                      const pc=rp.slot&&rp.slot.startsWith("C")?"#60a5fa":rp.slot&&(rp.slot==="SF"||rp.slot==="PF")?"#4ade80":"#f59e42";
+                      const cell=ap2(el2("div","flex:1;text-align:center"),
+                        ap2(el2("div","width:26px;height:26px;border-radius:50%;margin:0 auto 2px;background:"+pc+"22;border:"+(isBoosted2?"2px solid #f59e42;box-shadow:0 0 6px rgba(245,158,66,0.5)":"1px solid "+pc+"55")+";display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:800;color:"+(isBoosted2?"#f59e42":pc)),
+                          el2("span","",ini2)
+                        ),
+                        el2("div","font-size:7px;color:#9ca3af;overflow:hidden;text-overflow:ellipsis;white-space:nowrap",(rp.name||"").split(" ").pop()),
+                        el2("div","font-size:6px;color:#4b5563","'"+String(rp.season||"").slice(2))
+                      );
+                      rosterRow.appendChild(cell);
+                    });
+                    row.appendChild(rosterRow);
+                  }
+                  card.appendChild(row);
+                });
+                // CTA
+                ap2(card,ap2(el2("div","margin-top:12px;text-align:center;border-top:1px solid rgba(255,255,255,0.06);padding-top:12px"),
+                  el2("div","font-size:11px;color:#9ca3af;font-family:Barlow,sans-serif;margin-bottom:4px","Can you beat us?"),
+                  el2("div","font-size:19px;font-weight:900;color:#f59e42","drafted.games")
+                ));
+                document.body.appendChild(card);
+                try{
+                  await document.fonts.ready;
+                  const cnv=await window.html2canvas(card,{backgroundColor:"#07090f",scale:2,width:390,windowWidth:430});
+                  document.body.removeChild(card);
+                  cnv.toBlob(async blob=>{
+                    const file=new File([blob],"drafted-multiplayer.png",{type:"image/png"});
+                    if(navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],title:"Drafted Multiplayer"});}catch{window.open(URL.createObjectURL(blob),"_blank");}}
+                    else{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="drafted-multiplayer.png";a.click();}
+                  },"image/png");
+                }catch(e){if(document.body.contains(card))document.body.removeChild(card);}
+              }} style={{width:"100%",background:"rgba(255,255,255,0.06)",color:"#f9fafb",
+                border:"1px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px",fontSize:15,
+                fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
+                cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
+                ↑ Share Standings
+              </button>
+
+              {/* Rematch */}
+              <button onClick={async()=>{
+                // Same room code, new seed, reset to lobby
+                const newSeed=Math.floor(Math.random()*999999)+1;
+                const resetPlayers=multiPlayers.map(p=>({...p,ready:false,result:null}));
+                await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({
+                  board_seed:newSeed,status:"lobby",players:resetPlayers
+                })});
+                setMultiResults([]);setMultiReady(false);setMultiPlayers(resetPlayers);
+                setMultiBoards(null);setMode(null);
+                setPhase("spin");setRound(0);setCurrentTeam(null);
+                setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
+                setDraftedNames(new Set());setUsedTeams(new Set());
+                setPick1(null);setPick2(null);setResult(null);setTierMsg("");
+                setSpinning(false);setSpinLanded(false);setPickTwoOn(false);setSelSlot(null);
+                setFreshUsed(false);setHomeUsed(false);setTwoUsed(false);
+                setBoostUsed(false);setPendingBoost(false);
+                setMultiPhase("lobby");
+              }} style={{width:"100%",background:"rgba(74,222,128,0.1)",color:"#4ade80",
+                border:"1px solid rgba(74,222,128,0.25)",borderRadius:14,padding:"14px",fontSize:15,
+                fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
+                cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
+                🔄 Rematch
+              </button>
+
+              {/* Back to Home */}
+              <button onClick={()=>{setShowMultiplayer(false);setMultiPhase("join");setMultiRoom(null);
+                setMultiResults([]);setMode(null);
+                setPhase("spin");setRound(0);setBoard([]);setSlots(SLOTS.map(s=>({...s,player:null})));
+                setDraftedNames(new Set());setUsedTeams(new Set());
+                setPick1(null);setPick2(null);setResult(null);setTierMsg("");
+                setSpinning(false);setSpinLanded(false);setBoostUsed(false);setPendingBoost(false);
+              }} style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
                 borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
                 fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
                 cursor:"pointer",textTransform:"uppercase",WebkitTapHighlightColor:"transparent"}}>
-              Back to Home
-            </button>
+                Back to Home
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    );
+      );
+    }
 
     // SPECTATOR — joined late
     if(multiPhase==="spectator") return(
