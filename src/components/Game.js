@@ -719,35 +719,25 @@ export default function Game(){
   const multiPollRef=useRef(null);
   useEffect(()=>{
     if(multiPollRef.current)clearInterval(multiPollRef.current);
-    if(!showMultiplayer||!multiRoom||multiPhase==="join"||multiPhase==="results")return;
+    if(!showMultiplayer||!multiRoom||multiPhase==="join")return;
     multiPollRef.current=setInterval(async()=>{
       try{
         const data=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=*");
         if(data&&Array.isArray(data)&&data[0]){
           const room=data[0];
+          // DB is source of truth for all players
           const dbPlayers=room.players||[];
-          const me2=username||"Anonymous";
-          setMultiPlayers(prev=>{
-            return dbPlayers.map(dbP=>{
-              // For your own entry: trust local state if you just set it ready
-              // For others: trust DB (their PATCH already saved)
-              if(dbP.username===me2){
-                const localMe=prev.find(lP=>lP.username===me2);
-                if(localMe&&localMe.ready&&!dbP.ready) return{...dbP,ready:true};
-              }
-              return dbP;
-            });
-          });
+          setMultiPlayers(dbPlayers);
           if(room.status==="playing"&&multiPhase==="lobby"){
             setMultiBoards(generateMultiBoards(room.board_seed));
             setMultiPhase("playing");setMode(multiMode);
           }
-          if(room.status==="results"&&multiPhase==="waiting"){
+          if((room.status==="results"||(room.players||[]).every(p=>p.result))&&multiPhase==="waiting"){
             setMultiResults(room.players||[]);
             setMultiPhase("results");
           }
-          // Rematch — host reset room back to lobby
-          if(room.status==="lobby"&&multiPhase==="results"){
+          // Rematch — any player can trigger reset detection
+          if(room.status==="lobby"&&(multiPhase==="results"||multiPhase==="waiting")){
             setMultiResults([]);setMultiReady(false);
             setMultiBoards(null);setMode(null);
             setPhase("spin");setRound(0);setCurrentTeam(null);
@@ -934,18 +924,22 @@ export default function Game(){
             name:s.player.name,season:s.player.season,slot:s.key,
             boosted:s.player.boosted||false
           }))};
-        supaFetch("rooms?room_code=eq."+multiRoom+"&select=players").then(data=>{
-          if(data&&data[0]){
-            const updatedPlayers=(data[0].players||[]).map(p=>
-              p.username===name2?{...p,result:myResult}:p
-            );
-            const allDone=updatedPlayers.every(p=>p.result);
-            supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({
-              players:updatedPlayers,status:allDone?"results":"playing"
-            })});
-            setMultiPlayers(updatedPlayers);
+        // Read fresh room state before submitting result
+        const freshRoom=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=players");
+        if(freshRoom&&freshRoom[0]){
+          const updatedPlayers=(freshRoom[0].players||[]).map(p=>
+            p.username===name2?{...p,result:myResult}:p
+          );
+          const allDone=updatedPlayers.filter(p=>p.result).length>=updatedPlayers.length;
+          await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({
+            players:updatedPlayers,status:allDone?"results":"playing"
+          })});
+          setMultiPlayers(updatedPlayers);
+          if(allDone){
+            setMultiResults(updatedPlayers);
+            setMultiPhase("results");
           }
-        });
+        }
         setMultiPhase("waiting");setPhase("result");
         setResult(res);setTierMsg(res?res.tierMessage:"");
         return;
@@ -1534,18 +1528,13 @@ export default function Game(){
             <button onClick={async()=>{
               const me=username||"Anonymous";
               const newReady=!multiReady;
-              const newPlayers=multiPlayers.map(p=>
-                p.username===me?{...p,ready:newReady}:p
-              );
-              setMultiPlayers(newPlayers);setMultiReady(newReady);
-              // Retry up to 3 times to ensure it saves
-              let saved=false;
-              for(let attempt=0;attempt<3;attempt++){
-                const res=await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
-                if(res){saved=true;break;}
-                await new Promise(r=>setTimeout(r,500));
-              }
-              if(!saved)console.error("[Multiplayer] Failed to save ready status");
+              setMultiReady(newReady);
+              // Read fresh from DB first to avoid stale state
+              const fresh=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=players");
+              const freshPlayers=(fresh&&fresh[0]&&fresh[0].players)||multiPlayers;
+              const newPlayers=freshPlayers.map(p=>p.username===me?{...p,ready:newReady}:p);
+              setMultiPlayers(newPlayers);
+              await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({players:newPlayers})});
             }} style={{width:"100%",background:multiReady?"rgba(74,222,128,0.15)":"rgba(255,255,255,0.06)",
               color:multiReady?"#4ade80":"#f9fafb",
               border:`1px solid ${multiReady?"rgba(74,222,128,0.3)":"rgba(255,255,255,0.15)"}`,
@@ -1557,7 +1546,7 @@ export default function Game(){
 
             {multiPlayers[0]?.username===(username||"Anonymous")&&multiPlayers.filter(p=>p.ready).length>=2&&(
               <button onClick={async()=>{
-                await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({status:"playing"})});
+                await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({status:"playing",players:multiPlayers})});
               }} style={{width:"100%",background:"#f59e42",color:"#07090f",border:"none",
                 borderRadius:14,padding:"16px",fontSize:17,fontWeight:800,
                 fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.08em",
@@ -1766,7 +1755,10 @@ export default function Game(){
               <button onClick={async()=>{
                 // Same room code, new seed, reset to lobby
                 const newSeed=Math.floor(Math.random()*999999)+1;
-                const resetPlayers=multiPlayers.map(p=>({...p,ready:false,result:null}));
+                // Read fresh player list from DB before resetting
+                const freshForRematch=await supaFetch("rooms?room_code=eq."+multiRoom+"&select=players");
+                const currentPlayers=(freshForRematch&&freshForRematch[0]&&freshForRematch[0].players)||multiPlayers;
+                const resetPlayers=currentPlayers.map(p=>({username:p.username,ready:false,result:null}));
                 await supaFetch("rooms?room_code=eq."+multiRoom,{method:"PATCH",body:JSON.stringify({
                   board_seed:newSeed,status:"lobby",players:resetPlayers
                 })});
